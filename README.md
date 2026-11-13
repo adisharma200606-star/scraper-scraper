@@ -9,6 +9,9 @@ It can be used three ways: a simple web page, the command line, or by asking Cla
 - Posts and comments, filtered by subreddit, keywords, author and date range
 - **Subreddit finder:** don't know where to look? Leave the subreddit empty and it finds the best
   ones for your keywords, then searches them. Or give several at once: `AI_Agents, SaaS, startups`
+- **What works here:** after each scrape, a one-line summary per subreddit of which kinds of posts
+  did best (question titles, long write-ups, flair, posting time...), worked out only from the
+  posts you just scraped
 - Separate date range for comments
 - Comments for specific posts (paste the links), or for the top N posts of a scrape
 - **Auto mode:** tries each source in turn, so if one is down or blocked the next one takes over, picking up where the last one stopped

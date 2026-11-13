@@ -59,7 +59,7 @@ def write_json(data, path):
     return path
 
 
-def save(posts=None, comments=None, out=None, fmt="csv"):
+def save(posts=None, comments=None, out=None, fmt="csv", insights=None):
     """Write results and return the list of files created.
 
     CSV: one file for posts, one for comments.
@@ -70,6 +70,8 @@ def save(posts=None, comments=None, out=None, fmt="csv"):
     if fmt in ("json", "both"):
         if posts:
             data = {"posts": nest(posts, comments)} if comments else {"posts": posts}
+            if insights:
+                data["what_works"] = [s["line"] for s in insights]
         else:
             data = {"comments": comments}
         target = Path(out).with_suffix(".json") if out else default_path("posts" if posts else "comments", "json")
@@ -86,4 +88,9 @@ def save(posts=None, comments=None, out=None, fmt="csv"):
             else:
                 target = default_path("comments", "csv")
             files.append(write_csv(comments, COMMENT_FIELDS, target))
+        if insights:
+            target = (Path(out).with_name(Path(out).stem + "_what_works.txt") if out
+                      else default_path("what_works", "txt"))
+            target.write_text("\n".join(s["line"] for s in insights) + "\n", encoding="utf-8")
+            files.append(target)
     return files

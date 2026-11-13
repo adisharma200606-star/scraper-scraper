@@ -416,3 +416,28 @@ def test_arctic_slow_down_422_is_retried_when_browsing(monkeypatch):
     codes = iter([slow, ok])
     with pytest.raises(SourceError):
         http.get("https://arctic-shift.photon-reddit.com/api/x", retry_slowdowns=False)
+
+
+# ---------- what works here ----------
+
+def _p(i, title, score, sub="test", **kw):
+    return dict({"id": f"x{i}", "subreddit": sub, "title": title, "score": score, "num_comments": 1,
+                 "created_utc": 1_700_000_000 + i * 3600, "source": "arctic_shift", "selftext": "", "url": ""}, **kw)
+
+
+def test_insights_spot_what_wins():
+    from reddit_scraper import insights
+    posts = [_p(i, "How do you price this?", 100) for i in range(6)] + \
+            [_p(10 + i, "Launching my new tool today", 2) for i in range(10)]
+    [s] = insights.summarize(posts, now=1_800_000_000)
+    assert s["works"][0].startswith("question titles")
+    assert s["line"].startswith("r/test (16 posts): works: question titles")
+
+
+def test_insights_skip_unscorable_posts():
+    from reddit_scraper import insights
+    now = 1_800_000_000
+    fresh = [_p(i, "t", 5, created_utc=now - 3600) for i in range(20)]      # under 36h old
+    rss_posts = [_p(50 + i, "t", None, source="rss") for i in range(20)]    # no scores
+    [s] = insights.summarize(fresh + rss_posts, now=now)
+    assert s["scored"] == 0 and "not enough scored posts" in s["line"]

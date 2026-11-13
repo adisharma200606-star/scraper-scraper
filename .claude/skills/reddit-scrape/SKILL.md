@@ -43,6 +43,13 @@ rscrape comments -s SUB [-q KEYWORDS] [-a AUTHOR] [--since] [--until] [--max N]
 - If the user wants a file or sheet: save CSV (the default, in `output/`) and tell them the path.
   Google Sheets: File > Import > Upload the CSV. Or use the web page's "Copy for Sheets" button.
 
+## "What works here"
+
+Every posts scrape ends with a one-line summary per subreddit (`what_works` in JSON output) of which
+post traits did best in that scrape. Use it when planning posts, but treat it as a hint from one
+sample. For a fair read, scrape a wide date range without keywords (e.g. `--since 90d --until 3d
+--max 1000`), since keyword filtering only shows posts on that topic.
+
 ## When it fails
 
 Run `rscrape check` to see which sources are reachable. "blocked by a proxy/firewall" means the

@@ -8,7 +8,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .. import core
+from .. import core, insights
 from ..models import Query, parse_when, post_id_from
 
 PAGE = Path(__file__).with_name("index.html")
@@ -37,12 +37,14 @@ def run_job(opts, emit):
     )
     sources, errors = set(), []
     n_posts = n_comments = 0
+    all_posts = []
     find_n = min(20, max(1, _int(opts.get("find_n"), 5)))
     on_subs = lambda subs: emit({"type": "subreddits", "items": subs})
 
     def on_post(p):
         nonlocal n_posts
         n_posts += 1
+        all_posts.append(p)
         emit({"type": "post", "item": p})
 
     def on_comment(c):
@@ -80,6 +82,9 @@ def run_job(opts, emit):
             sources.update(cres.sources)
             errors += cres.errors
 
+    if all_posts:
+        summary = insights.summarize(all_posts, keyword_filtered=bool(q.query))
+        emit({"type": "insights", "items": [s["line"] for s in summary]})
     emit({"type": "done", "posts": n_posts, "comments": n_comments,
           "sources": sorted(sources), "errors": errors})
 

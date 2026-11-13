@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from . import core, export
+from . import core, export, insights
 from .models import Query, parse_when, post_id_from
 
 SOURCE_CHOICES = ["auto", "arctic_shift", "pullpush", "reddit_json", "rss"]
@@ -59,12 +59,19 @@ def build_query(a, max_items):
 def finish(posts, comments, a, sources, errors):
     posts = core.sort_items(posts, a.sort)
     comments = core.sort_items(comments, "top" if a.sort in ("top", "comments") else a.sort)
+    summary = insights.summarize(posts, keyword_filtered=bool(getattr(a, "query", None))) if posts else []
     if a.out == "-":
         data = {"posts": export.nest(posts, comments)} if posts else {"comments": comments}
+        if summary:
+            data["what_works"] = [s["line"] for s in summary]
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
-        for f in export.save(posts, comments, out=a.out, fmt=a.format):
+        for f in export.save(posts, comments, out=a.out, fmt=a.format, insights=summary):
             log(f"saved {f.resolve()}")
+    if summary:
+        log("\nWhat works here (from this scrape only):")
+        for s in summary:
+            log("  " + s["line"])
     log(f"done: {len(posts)} posts, {len(comments)} comments"
         + (f" (from {', '.join(sources)})" if sources else ""))
     if not posts and not comments:

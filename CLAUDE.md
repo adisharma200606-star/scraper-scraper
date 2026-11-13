@@ -48,6 +48,7 @@ src/reddit_scraper/
   core.py           tries sources in order, falls back, removes duplicates, enforces date ranges
   http.py           every network request: retries (429 + all 5xx), rate-limit waits, block detection
   models.py         Query, the common post/comment shape, date parsing, local keyword matcher
+  insights.py       "what works here": per-subreddit one-liner computed only from the scraped posts
   export.py         CSV (utf-8-sig, for Excel/Sheets) and JSON; saves to <project>/output/
   sources/          one module per source, all exposing posts(), comments(), comments_for_post(), ping()
   web/server.py     tiny standard-library web server, 127.0.0.1 only, streams results as NDJSON
@@ -92,6 +93,18 @@ are given), `core.search_posts` / `core.search_comments`:
 Both RSS endpoints were tested from the Mac and work. A comma-separated list of subreddits runs the
 same per-subreddit loop. `rscrape subs "<keywords>"` only lists the subreddits it finds.
 In Claude Code you can also pick likely subreddits yourself and pass them as a list.
+
+## What works here (insights.py)
+
+After every posts scrape, each subreddit gets a one-line summary. It is computed only from that
+scrape's posts. Nothing about any subreddit is hard-coded, on purpose, so no assumptions creep in.
+Method: take the top ~quarter of posts by engagement (upvotes + comments), then for simple traits
+(question titles, numbers, first person, title length, text vs link, long write-ups, flair,
+3-hour posting window in local time) compute how many times more likely a post with the trait is
+to be a top post. 1.5x or more counts as "works", 0.67x or less as "doesn't". It skips posts with
+no score (RSS) and archive posts under 36h old, and needs 10+ scored posts per subreddit.
+The CLI prints it, saves `*_what_works.txt` and adds `what_works` to JSON; the web page shows a
+panel. It's correlation from one sample. Present it as a hint, not a rule.
 
 ## Working on this repo
 

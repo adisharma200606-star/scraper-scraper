@@ -85,6 +85,10 @@
   }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
   #checkOut { font-size: 12px; margin-top: 8px; }
+  #insights { border: 1px solid var(--border); background: var(--soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  #insights h3 { margin: 0 0 6px; font-size: 13px; }
+  #insights ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  #insights li { margin: 3px 0; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
     padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
@@ -213,6 +217,11 @@
       <span class="pill" id="subsPill" hidden></span>
     </div>
 
+    <div id="insights" hidden>
+      <h3>What works here <span class="hint">(based only on this scrape)</span></h3>
+      <ul id="insightsList"></ul>
+    </div>
+
     <div class="toolbar">
       <div class="tabs">
         <button type="button" data-tab="posts" class="on">Posts (<span id="nPosts">0</span>)</button>
@@ -313,7 +322,7 @@ function status(text) { $("statusText").textContent = text; }
 
 $("form").onsubmit = async (e) => {
   e.preventDefault();
-  posts = []; comments = []; $("log").textContent = ""; $("sourcesPill").hidden = true; $("subsPill").hidden = true;
+  posts = []; comments = []; $("log").textContent = ""; $("sourcesPill").hidden = true; $("subsPill").hidden = true; $("insights").hidden = true;
   queueDraw();
   const opts = formOptions();
   ctrl = new AbortController();
@@ -349,6 +358,10 @@ function handle(ev) {
   if (ev.type === "post") { posts.push(ev.item); queueDraw(); status(`Scraping... ${posts.length} posts, ${comments.length} comments`); }
   else if (ev.type === "comment") { comments.push(ev.item); queueDraw(); status(`Scraping... ${posts.length} posts, ${comments.length} comments`); }
   else if (ev.type === "log") log(ev.msg, /failed|skipped/.test(ev.msg) ? "bad" : "");
+  else if (ev.type === "insights") {
+    $("insightsList").innerHTML = ev.items.map(l => `<li>${esc(l)}</li>`).join("");
+    $("insights").hidden = !ev.items.length;
+  }
   else if (ev.type === "subreddits") { $("subsPill").hidden = false; $("subsPill").textContent = "searching " + ev.items.map(s => "r/" + s).join(", "); }
   else if (ev.type === "error") { status("Error: " + ev.msg); log(ev.msg, "bad"); }
   else if (ev.type === "done") {
