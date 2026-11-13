@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reddit Scraper</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #16181d; --muted: #5d6573; --border: #dde1e7;
+    --accent: #2f6fed; --accent-text: #ffffff; --soft: #eef2fb; --ok: #1f8a4c; --bad: #c83a3a;
+    --row-hover: #f3f5f9; --code: #f0f2f5;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --panel: #171a20; --text: #e7e9ee; --muted: #9aa3b2; --border: #2a2f39;
+    --accent: #5b8cff; --accent-text: #0b0d12; --soft: #1d2433; --ok: #4cc27f; --bad: #ff6b6b;
+    --row-hover: #1d2129; --code: #12151a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --panel: #171a20; --text: #e7e9ee; --muted: #9aa3b2; --border: #2a2f39;
+      --accent: #5b8cff; --accent-text: #0b0d12; --soft: #1d2433; --ok: #4cc27f; --bad: #ff6b6b;
+      --row-hover: #1d2129; --code: #12151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  .layout { display: grid; grid-template-columns: 330px 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; padding: 12px 16px; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+  form .field { margin-bottom: 12px; }
+  label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
+  .seg button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px; }
+  .seg button.on { background: var(--accent); color: var(--accent-text); }
+  button {
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    padding: 7px 12px; border-radius: 7px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chips button { padding: 3px 9px; font-size: 12px; border-radius: 99px; }
+  details { margin: 4px 0 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .actions { display: flex; gap: 8px; }
+  .actions button { flex: 1; }
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .status .big { font-weight: 600; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--soft); color: var(--muted); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar .tabs { display: flex; gap: 4px; margin-right: auto; }
+  .tabs button.on { background: var(--soft); border-color: var(--accent); }
+  .toolbar input, .toolbar select { width: auto; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 680px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  tr:hover td { background: var(--row-hover); }
+  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.nowrap { white-space: nowrap; }
+  td .clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 640px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  #log {
+    background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; max-height: 220px; overflow: auto; white-space: pre-wrap;
+  }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  #checkOut { font-size: 12px; margin-top: 8px; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Reddit Scraper</h1>
+  <button id="checkBtn" title="Test which sources are reachable right now">Check sources</button>
+  <button id="themeBtn" title="Switch light / dark">Dark mode</button>
+</header>
+
+<div class="layout">
+  <!-- ============ the form ============ -->
+  <div class="card">
+    <div class="seg" id="modeSeg">
+      <button type="button" data-mode="posts" class="on">Posts</button>
+      <button type="button" data-mode="comments">Comments</button>
+    </div>
+
+    <form id="form" autocomplete="off">
+      <div class="field">
+        <label for="source">Source</label>
+        <select id="source" name="source">
+          <option value="auto">Auto (recommended)</option>
+          <option value="arctic_shift">Arctic Shift: archive, any date range</option>
+          <option value="pullpush">PullPush: backup archive</option>
+          <option value="reddit_json">Reddit JSON: live, latest ~1000</option>
+          <option value="rss">Reddit RSS: live, newest posts only</option>
+        </select>
+      </div>
+
+      <div class="field only-comments" hidden>
+        <label for="posts">Post links or IDs (one per line)</label>
+        <textarea id="posts" name="posts" placeholder="https://www.reddit.com/r/.../comments/abc123/..."></textarea>
+        <div class="hint">Leave empty to search comments by subreddit / keyword / author instead.</div>
+      </div>
+
+      <div class="field">
+        <label for="subreddit">Subreddit</label>
+        <input id="subreddit" name="subreddit" placeholder="e.g. smallbusiness">
+      </div>
+      <div class="field">
+        <label for="query">Keywords</label>
+        <input id="query" name="query" placeholder='e.g. "refund policy" OR returns'>
+        <div class="hint">"exact phrase", OR, and -word to exclude.</div>
+      </div>
+      <div class="field">
+        <label for="author">Author</label>
+        <input id="author" name="author" placeholder="username (optional)">
+      </div>
+
+      <div class="field">
+        <label><span class="only-posts">Posts</span><span class="only-comments" hidden>Comments</span> from / to</label>
+        <div class="row2">
+          <input type="date" id="since" name="since" aria-label="From date">
+          <input type="date" id="until" name="until" aria-label="To date">
+        </div>
+        <div class="chips">
+          <button type="button" data-range="1">24h</button>
+          <button type="button" data-range="7">7 days</button>
+          <button type="button" data-range="30">30 days</button>
+          <button type="button" data-range="365">1 year</button>
+          <button type="button" data-range="0">Any time</button>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="max"><span class="only-posts">Max posts</span><span class="only-comments" hidden>Max comments</span></label>
+          <input type="number" id="max" name="max" value="100" min="1" max="100000">
+        </div>
+        <div class="field only-posts">
+          <label for="listing">Live listing</label>
+          <select id="listing" name="listing">
+            <option value="new">new</option><option value="hot">hot</option>
+            <option value="top">top</option><option value="rising">rising</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="only-posts">
+        <div class="field">
+          <label for="hydrate">Also get comments for</label>
+          <select id="hydrate" name="hydrate">
+            <option value="none">No comments</option>
+            <option value="top" selected>Top N posts (by comment count)</option>
+            <option value="all">All posts</option>
+          </select>
+        </div>
+        <div class="row2">
+          <div class="field" id="hydrateNField">
+            <label for="hydrate_n">N</label>
+            <input type="number" id="hydrate_n" name="hydrate_n" value="10" min="1">
+          </div>
+          <div class="field">
+            <label for="comments_max">Max per post</label>
+            <input type="number" id="comments_max" name="comments_max" value="500" min="1">
+          </div>
+        </div>
+        <details>
+          <summary>Comment date range (optional)</summary>
+          <div class="row2">
+            <input type="date" id="c_since" name="c_since" aria-label="Comments from">
+            <input type="date" id="c_until" name="c_until" aria-label="Comments to">
+          </div>
+        </details>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="runBtn">Run scrape</button>
+        <button type="button" id="stopBtn" disabled>Stop</button>
+      </div>
+      <div id="checkOut"></div>
+    </form>
+  </div>
+
+  <!-- ============ the results ============ -->
+  <div class="card">
+    <div class="status">
+      <span class="big" id="statusText">Ready.</span>
+      <span class="pill" id="sourcesPill" hidden></span>
+    </div>
+
+    <div class="toolbar">
+      <div class="tabs">
+        <button type="button" data-tab="posts" class="on">Posts (<span id="nPosts">0</span>)</button>
+        <button type="button" data-tab="comments">Comments (<span id="nComments">0</span>)</button>
+      </div>
+      <input id="filter" placeholder="Filter results..." aria-label="Filter results">
+      <select id="sort" aria-label="Sort">
+        <option value="new">Newest</option><option value="old">Oldest</option>
+        <option value="top">Top score</option><option value="comments">Most comments</option>
+      </select>
+    </div>
+    <div class="toolbar">
+      <button type="button" id="csvBtn">Download CSV</button>
+      <button type="button" id="jsonBtn">Download JSON</button>
+      <button type="button" id="copyBtn" title="Copy the current tab, then paste into Google Sheets">Copy for Sheets</button>
+    </div>
+
+    <div class="tablewrap"><div id="table"><div class="empty">Results will show up here as they arrive.</div></div></div>
+
+    <details style="margin-top:14px">
+      <summary>Activity log</summary>
+      <div id="log"></div>
+    </details>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const POST_FIELDS = ["id","subreddit","title","author","score","num_comments","created","flair","selftext","url","permalink","over_18","created_utc","source"];
+const COMMENT_FIELDS = ["id","post_id","parent_id","subreddit","author","body","score","created","permalink","created_utc","source"];
+const SHOW_ROWS = 500;
+
+let mode = "posts", tab = "posts", posts = [], comments = [], ctrl = null, drawQueued = false;
+
+// ---------- theme ----------
+function applyTheme(t) {
+  if (t) document.documentElement.dataset.theme = t;
+  const dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  $("themeBtn").textContent = dark ? "Light mode" : "Dark mode";
+}
+applyTheme(store.get("theme"));
+$("themeBtn").onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  store.set("theme", next);
+  applyTheme(next);
+};
+
+// ---------- form ----------
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  document.querySelectorAll(".only-posts").forEach(el => el.hidden = m !== "posts");
+  document.querySelectorAll(".only-comments").forEach(el => el.hidden = m !== "comments");
+  if (m === "comments" && $("max").value === "100") $("max").value = "500";
+  if (m === "posts" && $("max").value === "500") $("max").value = "100";
+  setTab(m);
+}
+document.querySelectorAll("#modeSeg button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+function ymd(d) { return d.toISOString().slice(0, 10); }
+document.querySelectorAll("[data-range]").forEach(b => b.onclick = () => {
+  const days = +b.dataset.range;
+  $("since").value = days ? ymd(new Date(Date.now() - days * 864e5)) : "";
+  $("until").value = "";
+});
+$("hydrate").onchange = () => $("hydrateNField").style.visibility = $("hydrate").value === "top" ? "visible" : "hidden";
+
+const SAVED = ["source","subreddit","query","author","max","listing","hydrate","hydrate_n","comments_max"];
+try {
+  const saved = JSON.parse(store.get("form") || "{}");
+  SAVED.forEach(k => { if (saved[k] != null) $(k).value = saved[k]; });
+} catch {}
+$("hydrate").onchange();
+
+function formOptions() {
+  const o = { mode };
+  new FormData($("form")).forEach((v, k) => o[k] = String(v).trim());
+  const keep = {}; SAVED.forEach(k => keep[k] = o[k]); store.set("form", JSON.stringify(keep));
+  return o;
+}
+
+// ---------- running a scrape ----------
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  $("log").appendChild(line);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+function status(text) { $("statusText").textContent = text; }
+
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  posts = []; comments = []; $("log").textContent = ""; $("sourcesPill").hidden = true;
+  queueDraw();
+  const opts = formOptions();
+  ctrl = new AbortController();
+  $("runBtn").disabled = true; $("stopBtn").disabled = false;
+  status("Scraping...");
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts), signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error("Server said " + res.status);
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (line.trim()) handle(JSON.parse(line));
+      }
+    }
+  } catch (err) {
+    if (err.name === "AbortError") { status(`Stopped. Kept ${posts.length} posts, ${comments.length} comments.`); log("Stopped by you."); }
+    else { status("Something went wrong: " + err.message); log(String(err), "bad"); }
+  } finally {
+    $("runBtn").disabled = false; $("stopBtn").disabled = true; ctrl = null; queueDraw();
+  }
+};
+$("stopBtn").onclick = () => ctrl && ctrl.abort();
+
+function handle(ev) {
+  if (ev.type === "post") { posts.push(ev.item); queueDraw(); status(`Scraping... ${posts.length} posts, ${comments.length} comments`); }
+  else if (ev.type === "comment") { comments.push(ev.item); queueDraw(); status(`Scraping... ${posts.length} posts, ${comments.length} comments`); }
+  else if (ev.type === "log") log(ev.msg, /failed|skipped/.test(ev.msg) ? "bad" : "");
+  else if (ev.type === "error") { status("Error: " + ev.msg); log(ev.msg, "bad"); }
+  else if (ev.type === "done") {
+    const found = ev.posts + ev.comments;
+    status(found ? `Done: ${ev.posts} posts, ${ev.comments} comments.` : "Done, but nothing was found. Open the activity log to see why.");
+    if (ev.sources.length) { $("sourcesPill").hidden = false; $("sourcesPill").textContent = "from " + ev.sources.join(", "); }
+    if (!found && ev.errors.length) log("Problems: " + ev.errors.join(" | "), "bad");
+  }
+}
+
+// ---------- results table ----------
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  queueDraw();
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => setTab(b.dataset.tab));
+$("filter").oninput = queueDraw; $("sort").onchange = queueDraw;
+
+function sorted(items) {
+  const how = $("sort").value;
+  const key = {
+    new: x => x.created_utc || 0, old: x => -(x.created_utc || 0),
+    top: x => x.score ?? -1e9, comments: x => x.num_comments ?? 0,
+  }[how];
+  const f = $("filter").value.trim().toLowerCase();
+  const list = f ? items.filter(x => [x.title, x.selftext, x.body, x.author, x.subreddit].join(" ").toLowerCase().includes(f)) : items.slice();
+  return list.sort((a, b) => key(b) - key(a));
+}
+function queueDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(draw); } }
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function safeUrl(u) { return /^https:\/\//.test(u || "") ? esc(u) : "#"; }
+
+function draw() {
+  drawQueued = false;
+  $("nPosts").textContent = posts.length; $("nComments").textContent = comments.length;
+  const rows = sorted(tab === "posts" ? posts : comments);
+  if (!rows.length) { $("table").innerHTML = `<div class="empty">${posts.length || comments.length ? "Nothing in this tab." : "Results will show up here as they arrive."}</div>`; return; }
+  const shown = rows.slice(0, SHOW_ROWS);
+  let html;
+  if (tab === "posts") {
+    html = `<table><thead><tr><th>Score</th><th>Comments</th><th>Subreddit</th><th>Title</th><th>Author</th><th>Posted (UTC)</th></tr></thead><tbody>` +
+      shown.map(p => `<tr><td class="num">${p.score ?? "–"}</td><td class="num">${p.num_comments ?? "–"}</td><td class="nowrap">r/${esc(p.subreddit)}</td>` +
+        `<td><a href="${safeUrl(p.permalink)}" target="_blank" rel="noopener" title="${esc((p.selftext || "").slice(0, 600))}">${esc(p.title)}</a></td>` +
+        `<td class="nowrap">${esc(p.author)}</td><td class="nowrap">${esc(p.created)}</td></tr>`).join("") + `</tbody></table>`;
+  } else {
+    html = `<table><thead><tr><th>Score</th><th>Comment</th><th>Author</th><th>Subreddit</th><th>Posted (UTC)</th><th></th></tr></thead><tbody>` +
+      shown.map(c => `<tr><td class="num">${c.score ?? "–"}</td><td><div class="clip">${esc(c.body)}</div></td><td class="nowrap">${esc(c.author)}</td>` +
+        `<td class="nowrap">r/${esc(c.subreddit)}</td><td class="nowrap">${esc(c.created)}</td>` +
+        `<td><a href="${safeUrl(c.permalink)}" target="_blank" rel="noopener">open</a></td></tr>`).join("") + `</tbody></table>`;
+  }
+  if (rows.length > SHOW_ROWS) html += `<div class="hint" style="padding:8px">Showing ${SHOW_ROWS} of ${rows.length}. Downloads include everything.</div>`;
+  $("table").innerHTML = html;
+}
+
+// ---------- export ----------
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800); }
+function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-"); }
+function download(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function current() { return tab === "posts" ? [sorted(posts), POST_FIELDS] : [sorted(comments), COMMENT_FIELDS]; }
+
+$("csvBtn").onclick = () => {
+  const [rows, fields] = current();
+  if (!rows.length) return toast("Nothing to download yet");
+  const cell = v => { const s = String(v ?? "").slice(0, 49000); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csv = "﻿" + [fields.join(","), ...rows.map(r => fields.map(f => cell(r[f])).join(","))].join("\r\n");
+  download(`reddit_${tab}_${stamp()}.csv`, csv, "text/csv");
+};
+$("jsonBtn").onclick = () => {
+  if (!posts.length && !comments.length) return toast("Nothing to download yet");
+  const byPost = {}; comments.forEach(c => (byPost[c.post_id] ||= []).push(c));
+  const data = posts.length ? { posts: sorted(posts).map(p => ({ ...p, comments: byPost[p.id] || [] })) } : { comments: sorted(comments) };
+  download(`reddit_${stamp()}.json`, JSON.stringify(data, null, 2), "application/json");
+};
+$("copyBtn").onclick = async () => {
+  const [rows, fields] = current();
+  if (!rows.length) return toast("Nothing to copy yet");
+  const cell = v => String(v ?? "").replace(/[\t\r\n]+/g, " ").slice(0, 49000);
+  const tsv = [fields.join("\t"), ...rows.map(r => fields.map(f => cell(r[f])).join("\t"))].join("\n");
+  try { await navigator.clipboard.writeText(tsv); }
+  catch {
+    const ta = document.createElement("textarea"); ta.value = tsv; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  toast(`Copied ${rows.length} rows. Paste into Google Sheets.`);
+};
+
+// ---------- source health check ----------
+$("checkBtn").onclick = async () => {
+  $("checkOut").textContent = "Checking sources...";
+  try {
+    const r = await (await fetch("/api/check")).json();
+    $("checkOut").innerHTML = r.map(s => `<div class="${s.ok ? "ok" : "bad"}">${s.ok ? "OK" : "DOWN"} · ${esc(s.source)} <span class="hint">${s.ok ? s.seconds + "s" : esc(s.detail)}</span></div>`).join("");
+  } catch (e) { $("checkOut").textContent = "Check failed: " + e.message; }
+};
+</script>
+</body>
+</html>

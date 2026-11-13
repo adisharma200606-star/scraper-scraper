@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Scrape results
+output/
+
+# Secrets
+.env
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
