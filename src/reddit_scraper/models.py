@@ -1,4 +1,6 @@
 """The shared shape every source converts its data into, plus date helpers."""
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone

@@ -1,7 +1,11 @@
 """One place for every network request: timeouts, retries and rate-limit waits."""
 import time
+import warnings
 
-import requests
+# The Python that ships with macOS prints a scary-looking but harmless SSL warning.
+warnings.filterwarnings("ignore", message=".*OpenSSL.*")
+
+import requests  # noqa: E402
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

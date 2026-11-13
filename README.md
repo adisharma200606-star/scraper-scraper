@@ -29,21 +29,18 @@ Auto mode tries them in that order.
 
 ## Setup
 
-Needs Python 3.10+.
+Needs Python 3.9+ and Git. Clone the repo, then run the setup script once:
 
-```
-git clone <this repo's URL>
-cd scraper-scraper
-python -m venv .venv
-```
-Activate the environment:
+- **Mac/Linux:** `bash setup.sh`
+- **Windows:** double-click `setup.bat` (or run `setup.bat` in a terminal)
+
+The script creates a private Python environment in `.venv`, updates pip and installs the scraper.
+
+To use `rscrape`, activate the environment in each new terminal:
 - Mac/Linux: `source .venv/bin/activate`
 - Windows: `.venv\Scripts\activate`
 
-Then:
-```
-pip install -e .
-```
+Or skip activating and call it directly: `.venv/bin/rscrape` (Mac/Linux) or `.venv\Scripts\rscrape` (Windows).
 
 ## Use
 

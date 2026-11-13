@@ -7,7 +7,7 @@ name = "reddit-scraper"
 version = "1.0.0"
 description = "Scrape Reddit posts and comments without logging in or using API keys."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "requests>=2.31",
 ]
