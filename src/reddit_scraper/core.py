@@ -2,11 +2,14 @@
 
 Both the command line (cli.py) and the web page (web/server.py) call these functions.
 """
+import math
+import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field, replace
 
 from .http import Unsupported
-from .models import Query
+from .models import Query, _clean
 from .sources import SOURCES
 
 # The order sources are tried in when source="auto".
@@ -156,6 +159,112 @@ def scrape_post_comments(post_ids, max_per_post=500, source="auto", log=None, on
         log(f"  -> {len(res.items) - before} comments")
     res.sources = sorted(set(res.sources))
     return res
+
+
+# ---------- searching several subreddits, or finding them for you ----------
+
+def parse_subreddits(text):
+    """'AI_Agents, r/SaaS startups' -> ['AI_Agents', 'SaaS', 'startups']"""
+    out = []
+    for part in re.split(r"[,\s]+", text or ""):
+        name = _clean(part, ("r/", "/r/"))
+        if name and name.lower() not in (o.lower() for o in out):
+            out.append(name)
+    return out
+
+
+def find_subreddits(query, n=5, log=None, sample_posts=None):
+    """Pick the n subreddits most worth searching for these keywords.
+
+    Two signals, best first:
+    1. subreddits where the topic actually came up recently (from Reddit's own search)
+    2. communities Reddit's subreddit search says match the keywords
+    """
+    log = log or _quiet
+    counts = Counter(p["subreddit"] for p in (sample_posts or []) if p.get("subreddit"))
+    active = [name for name, c in counts.most_common() if c >= 2]
+    try:
+        matching = [s["name"] for s in SOURCES["rss"].find_subreddits(query, limit=n * 2, log=log)]
+    except Exception as e:
+        log(f"  Reddit's subreddit search failed: {e}")
+        matching = []
+    once = [name for name, c in counts.most_common() if c == 1]
+
+    picked = []
+    for name in active + matching + once:
+        if name.lower() not in (p.lower() for p in picked):
+            picked.append(name)
+    return picked[:n]
+
+
+def _sample_all_of_reddit(q, max_items, log, on_item=None):
+    """Reddit's own search across every subreddit (via RSS). Returns what it found."""
+    found = []
+    try:
+        for post in SOURCES["rss"].search_all(replace(q, max=max_items), log):
+            found.append(post)
+            if on_item:
+                on_item(post)
+    except Exception as e:
+        log(f"  Reddit's all-of-Reddit search failed: {e}")
+    return found
+
+
+def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, include_search):
+    """Run a single-subreddit search over several subreddits (given, or found automatically)."""
+    log = log or _quiet
+    on_item = on_item or _quiet
+    subs = parse_subreddits(q.subreddit)
+    if len(subs) == 1:
+        return single(replace(q, subreddit=subs[0]), source, log, on_item)
+    if not subs and (not q.query or q.author):
+        return single(q, source, log, on_item)  # no keywords to go on, or an author narrows it already
+
+    combined, seen = Result(), set()
+
+    def take(item):
+        if item.get("id") and item["id"] not in seen:
+            seen.add(item["id"])
+            combined.items.append(item)
+            on_item(item)
+
+    if not subs:
+        log(f'No subreddit given, so finding the best ones for "{q.query}"...')
+        if include_search and source in ("auto", "rss"):
+            log("Searching all of Reddit first...")
+            sample = _sample_all_of_reddit(q, max(1, min(100, q.max // 2)), log, take)
+            if sample:
+                combined.sources.append("reddit_search")
+                log(f"  Reddit search: got {len(sample)}")
+        else:
+            sample = _sample_all_of_reddit(q, 50, log)  # only used to rank subreddits
+        subs = find_subreddits(q.query, find_n, log, sample)
+        if not subs:
+            log("Couldn't find subreddits automatically. Type one in and try again.")
+            combined.errors.append("no subreddits found")
+            return combined
+        log("Searching: " + ", ".join(f"r/{s}" for s in subs))
+        if on_subreddits:
+            on_subreddits(subs)
+
+    budget = max(1, q.max - len(combined.items))
+    per_sub = max(1, math.ceil(budget / len(subs)))
+    for name in subs:
+        log(f"--- r/{name} ---")
+        res = single(replace(q, subreddit=name, max=per_sub), source, log, take)
+        combined.sources += [s for s in res.sources if s not in combined.sources]
+        combined.errors += [f"r/{name}: {e}" for e in res.errors]
+    return combined
+
+
+def search_posts(q, source="auto", log=None, on_item=None, find_n=5, on_subreddits=None):
+    """Like scrape_posts, but the subreddit can be empty (found for you) or a list."""
+    return _across_subreddits(scrape_posts, q, source, log, on_item, find_n, on_subreddits, True)
+
+
+def search_comments(q, source="auto", log=None, on_item=None, find_n=5, on_subreddits=None):
+    """Like scrape_comments, but the subreddit can be empty (found for you) or a list."""
+    return _across_subreddits(scrape_comments, q, source, log, on_item, find_n, on_subreddits, False)
 
 
 def posts_to_hydrate(posts, top_n):

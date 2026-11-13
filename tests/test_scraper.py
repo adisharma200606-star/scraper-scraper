@@ -241,7 +241,7 @@ def test_arctic_keyword_timeout_falls_back_to_local_scan(monkeypatch):
     got = list(arctic_shift.posts(Query(subreddit="ai", query="voice ai agent", max=10), logs.append))
     assert [p["title"] for p in got] == ["Voice AI agents are here", "my voice ai agent broke"]
     assert "query" in calls[0] and "query" not in calls[1]
-    assert any("filtering locally" in m for m in logs)
+    assert any("one by one" in m for m in logs)
 
 
 def test_arctic_keyword_without_subreddit_explains(monkeypatch):
@@ -333,3 +333,86 @@ def test_dead_server_is_rested_between_posts(monkeypatch):
     monkeypatch.setattr(pullpush, "comments_for_post", dead)
     core.scrape_post_comments(["a", "b", "c"])
     assert calls == ["a"]  # tried once, then skipped for the next posts
+
+
+# ---------- subreddit finder ----------
+
+SUB_FEED = FEED.format("".join(
+    f'<entry><id>t5_{i}</id><link href="https://www.reddit.com/r/{name}/"/><title>{name} title</title>'
+    f'<content type="html">about {name}</content></entry>'
+    for i, name in enumerate(["VoiceAI", "AI_Agents", "artificial"])))
+
+
+def test_rss_find_subreddits(monkeypatch):
+    calls = _rss_fake(monkeypatch, SUB_FEED)
+    got = rss.find_subreddits("voice ai agent", limit=2)
+    assert [s["name"] for s in got] == ["VoiceAI", "AI_Agents"]
+    assert calls[0].endswith("/subreddits/search.rss")
+
+
+def test_find_subreddits_prefers_where_topic_is_active(monkeypatch):
+    _rss_fake(monkeypatch, SUB_FEED)
+    sample = [{"subreddit": "LocalLLaMA"}, {"subreddit": "LocalLLaMA"}, {"subreddit": "random"}]
+    got = core.find_subreddits("voice ai agent", n=4, sample_posts=sample)
+    assert got == ["LocalLLaMA", "VoiceAI", "AI_Agents", "artificial"]
+
+
+def test_search_posts_with_no_subreddit_finds_and_searches_them(monkeypatch):
+    found_from_search = [dict(fake_post(90, 5000, sub="LocalLLaMA"), source="rss"),
+                         dict(fake_post(91, 5001, sub="LocalLLaMA"), source="rss")]
+    monkeypatch.setattr(rss, "search_all", lambda q, log=None: iter(found_from_search))
+    monkeypatch.setattr(rss, "find_subreddits", lambda query, limit=10, log=None: [{"name": "VoiceAI"}])
+    searched = []
+
+    def arctic(q, log=None):
+        searched.append((q.subreddit, q.max))
+        yield dict(fake_post(len(searched), 4000, sub=q.subreddit), id=f"{q.subreddit}-1")
+
+    monkeypatch.setattr(arctic_shift, "posts", arctic)
+    picked = []
+    res = core.search_posts(Query(query="voice ai agent", max=10), find_n=2, on_subreddits=picked.append)
+    assert picked == [["LocalLLaMA", "VoiceAI"]]
+    assert searched == [("LocalLLaMA", 4), ("VoiceAI", 4)]   # 10 total, 2 used by Reddit search
+    assert len(res.items) == 4 and "reddit_search" in res.sources
+
+
+def test_search_posts_with_a_list_of_subreddits(monkeypatch):
+    searched = []
+
+    def arctic(q, log=None):
+        searched.append(q.subreddit)
+        yield dict(fake_post(1, 4000, sub=q.subreddit), id=q.subreddit)
+
+    monkeypatch.setattr(arctic_shift, "posts", arctic)
+    res = core.search_posts(Query(subreddit="AI_Agents, r/SaaS", query="cold email", max=10))
+    assert searched == ["AI_Agents", "SaaS"] and len(res.items) == 2
+
+
+def test_cli_subs_command(monkeypatch, capsys):
+    from reddit_scraper import cli
+    monkeypatch.setattr(rss, "search_all", lambda q, log=None: iter([{"id": "a", "subreddit": "AI_Agents"},
+                                                                      {"id": "b", "subreddit": "AI_Agents"}]))
+    monkeypatch.setattr(rss, "find_subreddits", lambda query, limit=10, log=None: [{"name": "VoiceAI"}])
+    with pytest.raises(SystemExit) as e:
+        cli.main(["subs", "voice ai agent"])
+    assert e.value.code == 0
+    assert capsys.readouterr().out.splitlines() == ["r/AI_Agents   (2 recent matching posts)", "r/VoiceAI"]
+
+
+def test_arctic_slow_down_422_is_retried_when_browsing(monkeypatch):
+    from reddit_scraper import http
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code, self.headers, self._body = code, {}, body
+        def json(self):
+            return self._body
+
+    slow = R(422, {"error": "Timeout. Maybe slow down a bit"})
+    ok = R(200, {"data": []})
+    codes = iter([slow, ok])
+    monkeypatch.setattr(http.requests, "get", lambda *a, **k: next(codes))
+    assert http.get("https://arctic-shift.photon-reddit.com/api/x").status_code == 200
+    codes = iter([slow, ok])
+    with pytest.raises(SourceError):
+        http.get("https://arctic-shift.photon-reddit.com/api/x", retry_slowdowns=False)

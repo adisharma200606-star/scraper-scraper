@@ -40,9 +40,13 @@ def mark_blocked(name):
     _blocked_until[name] = time.time() + BLOCK_MINUTES * 60
 
 
-def _should_retry(status):
+def _should_retry(resp, retry_slowdowns):
+    status = resp.status_code
     # 429 = slow down; 5xx = the server is having problems (PullPush's 526 included).
-    return status == 429 or status >= 500
+    if status == 429 or status >= 500:
+        return True
+    # Arctic Shift answers "slow down" with HTTP 422 "Timeout. Maybe slow down a bit".
+    return retry_slowdowns and status == 422 and "slow down" in _error_text(resp).lower()
 
 
 def _wait_seconds(resp, fallback):
@@ -56,7 +60,7 @@ def _wait_seconds(resp, fallback):
     return min(fallback, MAX_WAIT)
 
 
-def get(url, params=None, *, retries=3, timeout=30, log=None):
+def get(url, params=None, *, retries=3, timeout=30, log=None, retry_slowdowns=True):
     """GET a URL and return the response. Retries rate limits and server errors."""
     delay = 2.0
     last_problem, last_status = "unknown error", None
@@ -84,7 +88,7 @@ def get(url, params=None, *, retries=3, timeout=30, log=None):
             if resp.status_code == 200:
                 return resp
             last_status = resp.status_code
-            if _should_retry(resp.status_code):
+            if _should_retry(resp, retry_slowdowns):
                 last_problem = f"HTTP {resp.status_code}"
                 if attempt < retries:
                     wait = _wait_seconds(resp, delay)

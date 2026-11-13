@@ -24,10 +24,10 @@ def _filters(q):
     return p
 
 
-def _walk(endpoint, params, max_items, log):
+def _walk(endpoint, params, max_items, log, patient=True):
     return walk_backwards(
         f"{BASE}/{endpoint}", params, max_items=max_items,
-        page_size=100, size_param="limit", sleep=0.5, log=log,
+        page_size=100, size_param="limit", sleep=1.0, log=log, patient=patient,
     )
 
 
@@ -47,7 +47,8 @@ def _search(endpoint, keyword_param, q, convert, text_of, log):
 
     got = 0
     try:
-        for row in _walk(endpoint, dict(params, **{keyword_param: q.query}), q.max, log):
+        # Not patient: if their keyword search is struggling, go straight to plan B.
+        for row in _walk(endpoint, dict(params, **{keyword_param: q.query}), q.max, log, patient=False):
             got += 1
             yield convert(row, NAME)
         return
@@ -59,7 +60,8 @@ def _search(endpoint, keyword_param, q, convert, text_of, log):
                 f"keyword search failed ({e}). Add a subreddit or author so it can "
                 "scan and filter instead", e.status)
         if log:
-            log(f"  {NAME} keyword search failed ({e}), so scanning and filtering locally instead")
+            log(f"  {NAME}'s keyword search is busy ({e}), so checking posts one by one instead "
+                "(slower, but works)")
 
     match = keyword_matcher(q.query)
     scanned = found = 0

@@ -37,6 +37,8 @@ def run_job(opts, emit):
     )
     sources, errors = set(), []
     n_posts = n_comments = 0
+    find_n = min(20, max(1, _int(opts.get("find_n"), 5)))
+    on_subs = lambda subs: emit({"type": "subreddits", "items": subs})
 
     def on_post(p):
         nonlocal n_posts
@@ -55,13 +57,15 @@ def run_job(opts, emit):
             res = core.scrape_post_comments(
                 post_ids, q.max, source, log=log, on_item=on_comment, since=q.since, until=q.until)
         elif q.subreddit or q.author or q.query:
-            res = core.scrape_comments(q, source, log=log, on_item=on_comment)
+            res = core.search_comments(q, source, log=log, on_item=on_comment,
+                                       find_n=find_n, on_subreddits=on_subs)
         else:
             raise ValueError("Enter post links, or at least a subreddit, author or keyword.")
         sources.update(res.sources)
         errors += res.errors
     else:
-        res = core.scrape_posts(q, source, log=log, on_item=on_post)
+        res = core.search_posts(q, source, log=log, on_item=on_post,
+                                find_n=find_n, on_subreddits=on_subs)
         sources.update(res.sources)
         errors += res.errors
         hydrate = opts.get("hydrate") or "none"

@@ -79,15 +79,19 @@ The only runtime dependency is `requests`.
   threads (no scores). Its per-subreddit search feed returned 404, so keyword filtering on RSS
   is done locally on the normal feed.
 
-## Idea not built yet: finding subreddits automatically
+## Subreddit finder
 
-Often the right subreddit isn't known in advance. Tested from the Mac and working:
-- `https://www.reddit.com/subreddits/search.rss?q=<keywords>` lists matching communities.
-- `https://www.reddit.com/search.rss?q=<keywords>&sort=new` searches all of Reddit.
+Often the right subreddit isn't known in advance. When the subreddit is left empty (and keywords
+are given), `core.search_posts` / `core.search_comments`:
+1. run Reddit's own all-of-Reddit search over RSS (`/search.rss?q=...&sort=new`). Its posts are
+   kept as results, and it shows which subreddits the topic actually comes up in;
+2. ask Reddit's subreddit search over RSS (`/subreddits/search.rss?q=...`) for matching communities;
+3. rank: subreddits with 2+ recent matching posts first, then Reddit's suggestions;
+4. search the top N (`--find N`, default 5) with the normal sources, splitting `--max` between them.
 
-Plan: when the subreddit is left empty, discover the top few subreddits with the first feed,
-then run the normal Arctic Shift search in each. Optionally add results from the second feed.
-In Claude Code you can also just pick likely subreddits yourself and run `rscrape` on each.
+Both RSS endpoints were tested from the Mac and work. A comma-separated list of subreddits runs the
+same per-subreddit loop. `rscrape subs "<keywords>"` only lists the subreddits it finds.
+In Claude Code you can also pick likely subreddits yourself and pass them as a list.
 
 ## Working on this repo
 

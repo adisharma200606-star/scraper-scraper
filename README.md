@@ -7,6 +7,8 @@ It can be used three ways: a simple web page, the command line, or by asking Cla
 ## Features
 
 - Posts and comments, filtered by subreddit, keywords, author and date range
+- **Subreddit finder:** don't know where to look? Leave the subreddit empty and it finds the best
+  ones for your keywords, then searches them. Or give several at once: `AI_Agents, SaaS, startups`
 - Separate date range for comments
 - Comments for specific posts (paste the links), or for the top N posts of a scrape
 - **Auto mode:** tries each source in turn, so if one is down or blocked the next one takes over, picking up where the last one stopped
@@ -50,6 +52,8 @@ Or skip activating and call it directly: `.venv/bin/rscrape` (Mac/Linux) or `.ve
 ```
 rscrape posts -s smallbusiness -q "refund policy" --since 2025-01-01 --until 2025-03-31 --max 500
 rscrape posts -s smallbusiness --since 7d --comments 20   # plus comments on the 20 busiest posts
+rscrape posts -q "voice ai agent" --since 30d             # no subreddit: finds them for you
+rscrape subs "voice ai agent"                            # just list matching subreddits
 rscrape comments --post https://www.reddit.com/r/x/comments/abc123/title/
 rscrape comments -s ecommerce -q shipping --since 30d
 rscrape check                                            # which sources are working right now

@@ -8,7 +8,9 @@ import html
 import re
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from datetime import datetime
+from urllib.parse import urlencode
 
 from ..http import SourceError, Unsupported, get, is_blocked, mark_blocked
 from ..models import full_link, iso, keyword_matcher
@@ -175,3 +177,33 @@ def comments_for_post(post_id, max_items, log=None):
 
 def ping():
     _entries("/r/AskReddit/new/.rss", {"limit": 1}, None, retries=0)
+
+
+# ---------- finding subreddits / searching all of Reddit ----------
+# Used when you don't know which subreddit to look in.
+
+def find_subreddits(query, limit=10, log=None):
+    """Ask Reddit which communities match the keywords. Returns [{name, title, about}], best first."""
+    found = []
+    for entry in _entries("/subreddits/search.rss", {"q": query, "limit": max(limit, 25)}, log):
+        link_el = entry.find("a:link", NS)
+        m = re.search(r"/r/([A-Za-z0-9_]+)", link_el.get("href") if link_el is not None else "")
+        if not m:
+            continue
+        found.append({
+            "name": m.group(1),
+            "title": entry.findtext("a:title", "", NS),
+            "about": _html_to_text(entry.findtext("a:content", "", NS))[:300],
+        })
+        if len(found) >= limit:
+            break
+    return found
+
+
+def search_all(q, log=None):
+    """Reddit's own search across all subreddits, newest first. Reddit does the matching."""
+    if not q.query:
+        raise Unsupported("searching all of Reddit needs keywords")
+    search = q.query + (f" author:{q.author}" if q.author else "")
+    path = "/search.rss?" + urlencode({"q": search, "sort": "new", "type": "link"})
+    yield from _walk(path, lambda e: _to_post(e, None), replace(q, query=None), log)

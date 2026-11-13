@@ -9,7 +9,8 @@ import time
 from ..http import get_json
 
 
-def walk_backwards(url, params, *, max_items, page_size, size_param, sleep, log):
+def walk_backwards(url, params, *, max_items, page_size, size_param, sleep, log, patient=True):
+    """patient=False: give up on the first "slow down" instead of waiting (for quick attempts)."""
     seen = set()
     until = params.pop("before", None)
     count = 0
@@ -18,7 +19,10 @@ def walk_backwards(url, params, *, max_items, page_size, size_param, sleep, log)
         p[size_param] = page_size
         if until is not None:
             p["before"] = until
-        rows = (get_json(url, p, log=log) or {}).get("data") or []
+        if patient:
+            rows = (get_json(url, p, log=log) or {}).get("data") or []
+        else:
+            rows = (get_json(url, p, log=log, retry_slowdowns=False) or {}).get("data") or []
         fresh = [r for r in rows if r.get("id") and r["id"] not in seen]
         if not fresh:
             return

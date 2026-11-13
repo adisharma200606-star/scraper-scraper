@@ -26,6 +26,9 @@ rscrape comments -s SUB [-q KEYWORDS] [-a AUTHOR] [--since] [--until] [--max N]
 - Comment keyword search needs a subreddit or author too.
 - `--sort top` only sorts what was fetched, so raise `--max` (e.g. 1000+) to find the real top posts in a range.
 - Leave `--source` on auto unless the user asks for a specific one.
+- No subreddit given? Leave `-s` out: it finds the best subreddits itself (`--find N`, default 5).
+  Or pass several: `-s "AI_Agents, SaaS"`. If you know the topic well, choosing the subreddits
+  yourself usually beats auto-finding. `rscrape subs "keywords"` previews what it would pick.
 - Keyword searches work best with a subreddit. If Arctic Shift's own keyword search times out, the
   scraper scans the subreddit and filters locally (up to `--scan-max`, default 10000 items checked);
   add a date range to make that faster.

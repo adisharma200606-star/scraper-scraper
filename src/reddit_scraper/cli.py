@@ -14,7 +14,9 @@ SOURCE_CHOICES = ["auto", "arctic_shift", "pullpush", "reddit_json", "rss"]
 EXAMPLES = """examples:
   rscrape posts -s smallbusiness --since 2025-01-01 --until 2025-01-31 --max 500
   rscrape posts -s smallbusiness -q "refund policy" --since 30d --comments 20
-  rscrape posts -q "best crm" --sort top --out results/crm.csv
+  rscrape posts -q "voice ai agent" --since 30d       (no subreddit: finds them for you)
+  rscrape posts -s "AI_Agents, SaaS, startups" -q "cold email"
+  rscrape subs "voice ai agent"                     (just list matching subreddits)
   rscrape comments --post https://www.reddit.com/r/x/comments/abc123/title/
   rscrape comments -s ecommerce -q "shipping" --since 7d
   rscrape posts -s python --max 20 --out -      (print JSON instead of saving)
@@ -28,7 +30,8 @@ def log(msg):
 
 
 def add_filters(p):
-    p.add_argument("-s", "--subreddit", help="subreddit name, e.g. smallbusiness")
+    p.add_argument("-s", "--subreddit",
+                   help="subreddit, or several separated by commas. Leave out to find them automatically")
     p.add_argument("-q", "--query", help='keywords; supports "exact phrase", OR, -exclude')
     p.add_argument("-a", "--author", help="only this Reddit username")
     p.add_argument("--since", help="start date: YYYY-MM-DD, or 7d / 12h / 2w ago")
@@ -37,6 +40,8 @@ def add_filters(p):
                    help="where to scrape from (default: auto = try each until one works)")
     p.add_argument("--sort", default="new", choices=list(core.SORTS),
                    help="order of the saved results (default: new)")
+    p.add_argument("--find", type=int, default=5, metavar="N",
+                   help="with no subreddit: how many subreddits to find and search (default 5)")
     p.add_argument("--scan-max", type=int, default=10000,
                    help="if a keyword search has to filter locally, check at most this many items (default 10000)")
     p.add_argument("--out", help="file to save to (default: output/<time>_posts.csv). Use - to print JSON")
@@ -70,7 +75,7 @@ def finish(posts, comments, a, sources, errors):
 
 def cmd_posts(a):
     q = build_query(a, a.max)
-    res = core.scrape_posts(q, a.source, log=log)
+    res = core.search_posts(q, a.source, log=log, find_n=a.find)
     comments, sources, errors = [], list(res.sources), list(res.errors)
     if a.comments and res.items:
         top_n = None if a.comments == "all" else int(a.comments)
@@ -93,8 +98,24 @@ def cmd_comments(a):
         if not (a.subreddit or a.author or a.query):
             log("give --post, or at least one of --subreddit / --author / --query")
             return 2
-        res = core.scrape_comments(build_query(a, a.max), a.source, log=log)
+        res = core.search_comments(build_query(a, a.max), a.source, log=log, find_n=a.find)
     return finish([], res.items, a, res.sources, res.errors)
+
+
+def cmd_subs(a):
+    log(f'Finding subreddits for "{a.keywords}"...')
+    sample = core._sample_all_of_reddit(Query(query=a.keywords), 50, log)
+    names = core.find_subreddits(a.keywords, a.n, log, sample)
+    if not names:
+        log("none found (is Reddit's RSS reachable? try: rscrape check)")
+        return 1
+    counts = {}
+    for p in sample:
+        counts[p.get("subreddit", "").lower()] = counts.get(p.get("subreddit", "").lower(), 0) + 1
+    for name in names:
+        seen = counts.get(name.lower(), 0)
+        print(f"r/{name}" + (f"   ({seen} recent matching posts)" if seen else ""))
+    return 0
 
 
 def cmd_check(a):
@@ -139,6 +160,11 @@ def main(argv=None):
     add_filters(pc)
     pc.add_argument("--max", type=int, default=500, help="max comments (per post when using --post)")
     pc.set_defaults(func=cmd_comments)
+
+    ps = sub.add_parser("subs", help="find subreddits for some keywords")
+    ps.add_argument("keywords", help='e.g. "voice ai agent"')
+    ps.add_argument("-n", type=int, default=10, help="how many to show (default 10)")
+    ps.set_defaults(func=cmd_subs)
 
     pu = sub.add_parser("ui", help="open the web page")
     pu.add_argument("--port", type=int, default=8765)
