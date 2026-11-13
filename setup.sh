@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 
 PY=""
-for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+for candidate in python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
   if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
 done
 if [ -z "$PY" ]; then
