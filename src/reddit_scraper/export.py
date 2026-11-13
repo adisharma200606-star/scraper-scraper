@@ -7,7 +7,18 @@ from pathlib import Path
 
 from .models import COMMENT_FIELDS, POST_FIELDS
 
-OUTPUT_DIR = Path(os.environ.get("RSCRAPE_OUTPUT", "output"))
+
+def _default_output_dir():
+    """The project's own output/ folder, wherever you run rscrape from."""
+    if os.environ.get("RSCRAPE_OUTPUT"):
+        return Path(os.environ["RSCRAPE_OUTPUT"]).expanduser()
+    project = Path(__file__).resolve().parents[2]
+    if (project / "pyproject.toml").exists():
+        return project / "output"
+    return Path("output").resolve()
+
+
+OUTPUT_DIR = _default_output_dir()
 SHEETS_CELL_LIMIT = 49000  # Google Sheets rejects cells over 50,000 characters
 
 

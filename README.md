@@ -20,10 +20,10 @@ It can be used three ways: a simple web page, the command line, or by asking Cla
 
 | Scraper | What it does | Good for | Limits |
 |---|---|---|---|
-| **Arctic Shift** | Free archive of Reddit going back to 2005 | Any date range, big pulls, keyword search, comments | Scores for posts under ~36h old may still show 0 or 1. Run by one volunteer, so it can go down |
+| **Arctic Shift** | Free archive of Reddit going back to 2005 | Any date range, big pulls, keyword search, comments | Scores for posts under ~36h old may still show 0 or 1. If its keyword search times out, the scraper scans the subreddit and filters locally instead |
 | **PullPush** | Second free archive (successor to Pushshift) | Backup when Arctic Shift is down | Slower; often throws server errors (handled with retries) |
-| **Reddit JSON** | Reddit's own public `.json` pages | Live, up-to-date scores and full comment threads | Only the latest ~1000 items; strict rate limits; sometimes blocks VPN/cloud IPs |
-| **Reddit RSS** | Reddit's public RSS feeds | Last-resort "what's new" when everything else is blocked | Newest posts only; no scores, comment counts or post text |
+| **Reddit JSON** | Reddit's own public `.json` pages | Live, up-to-date scores and full comment threads | Only the latest ~1000 items; strict rate limits; Reddit blocks it on many networks |
+| **Reddit RSS** | Reddit's public RSS feeds | Recent posts (with text) and comment threads, live | Recent items only (~1000 per feed, ~100 comments per post); no scores |
 
 Auto mode tries them in that order.
 
@@ -40,7 +40,7 @@ To use `rscrape`, activate the environment in each new terminal:
 - Mac/Linux: `source .venv/bin/activate`
 - Windows: `.venv\Scripts\activate`
 
-Or skip activating and call it directly: `.venv/bin/rscrape` (Mac/Linux) or `.venv\Scripts\rscrape` (Windows).
+Or skip activating and call it directly: `.venv/bin/rscrape` (Mac/Linux) or `.venv\Scripts\rscrape` (Windows). On Mac/Linux, `setup.sh` can also make `rscrape` work in every new terminal.
 
 ## Use
 

@@ -2,30 +2,32 @@
 
 Gives live, up-to-date scores and full comment threads, but:
 - only reaches the latest ~1000 items of any listing (no deep history)
-- rate-limits hard (~10 requests/minute) and sometimes blocks cloud/VPN IPs
+- rate-limits hard (~10 requests/minute)
+- Reddit blocks it from many networks (mobile data, VPNs, offices, cloud servers).
+  When that happens we skip it for 10 minutes instead of retrying.
 """
 import time
 
-from ..http import SourceError, Unsupported, get_json
+from ..http import SourceError, Unsupported, get_json, is_blocked, mark_blocked
 from ..models import comment_from_reddit, post_from_reddit
 
 NAME = "reddit_json"
-HOSTS = ["https://old.reddit.com", "https://www.reddit.com"]
+BASE = "https://www.reddit.com"
 PAGE_SLEEP = 4.0
+BLOCKED_MSG = ("Reddit is blocking its JSON pages for this network (common on mobile data, "
+               "VPNs and offices); skipping it for now")
 
 
-def _get(path, params, log, retries=4):
-    """Try old.reddit.com first (a bit more lenient), then www.reddit.com."""
-    params = dict(params, raw_json=1)
-    problem = None
-    for host in HOSTS:
-        try:
-            return get_json(host + path, params, log=log, retries=retries)
-        except SourceError as e:
-            problem = e
-            if log:
-                log(f"  {host} failed ({e}), trying next host")
-    raise problem
+def _get(path, params, log, retries=3):
+    if is_blocked(NAME):
+        raise SourceError(BLOCKED_MSG, 403)
+    try:
+        return get_json(BASE + path, dict(params, raw_json=1), log=log, retries=retries)
+    except SourceError as e:
+        if e.status in (401, 403):
+            mark_blocked(NAME)
+            raise SourceError(BLOCKED_MSG, e.status)
+        raise
 
 
 def _listing(path, params, max_items, log, *, chronological, since=None):

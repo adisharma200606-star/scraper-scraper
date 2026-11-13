@@ -112,8 +112,8 @@
           <option value="auto">Auto (recommended)</option>
           <option value="arctic_shift">Arctic Shift: archive, any date range</option>
           <option value="pullpush">PullPush: backup archive</option>
-          <option value="reddit_json">Reddit JSON: live, latest ~1000</option>
-          <option value="rss">Reddit RSS: live, newest posts only</option>
+          <option value="reddit_json">Reddit JSON: live scores (often blocked)</option>
+          <option value="rss">Reddit RSS: live, recent posts + comments</option>
         </select>
       </div>
 
@@ -349,6 +349,7 @@ function handle(ev) {
   else if (ev.type === "done") {
     const found = ev.posts + ev.comments;
     status(found ? `Done: ${ev.posts} posts, ${ev.comments} comments.` : "Done, but nothing was found. Open the activity log to see why.");
+    if (!found) log("Tip: add a subreddit and a date range, try fewer or broader keywords, or click Check sources to see what's reachable.");
     if (ev.sources.length) { $("sourcesPill").hidden = false; $("sourcesPill").textContent = "from " + ev.sources.join(", "); }
     if (!found && ev.errors.length) log("Problems: " + ev.errors.join(" | "), "bad");
   }

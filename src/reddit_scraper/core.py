@@ -11,8 +11,14 @@ from .sources import SOURCES
 
 # The order sources are tried in when source="auto".
 POST_ORDER = ["arctic_shift", "pullpush", "reddit_json", "rss"]
-COMMENT_SEARCH_ORDER = ["arctic_shift", "pullpush", "reddit_json"]
-POST_COMMENTS_ORDER = ["arctic_shift", "reddit_json", "pullpush"]
+COMMENT_SEARCH_ORDER = ["arctic_shift", "pullpush", "reddit_json", "rss"]
+POST_COMMENTS_ORDER = ["arctic_shift", "reddit_json", "rss", "pullpush"]
+
+
+# A source whose server just failed (after retries) is skipped for a short while,
+# so fetching comments for 50 posts doesn't wait on a dead server 50 times.
+DOWN_SECONDS = 120
+_down_until = {}
 
 
 @dataclass
@@ -60,6 +66,9 @@ def _run(make_iter, order, source, max_items, log, on_item, q=None, res=None, se
         remaining = max_items - (len(res.items) - start)
         if remaining <= 0:
             break
+        if source == "auto" and time.time() < _down_until.get(name, 0):
+            log(f"  {name}: skipped (it failed a moment ago)")
+            continue
         log(f"Trying {name}...")
         it = _lazy(make_iter, SOURCES[name], remaining, res.items[start:])
         got, failed = 0, False
@@ -76,6 +85,9 @@ def _run(make_iter, order, source, max_items, log, on_item, q=None, res=None, se
                 res.errors.append(f"{name}: {e}")
                 log(f"  {name} failed: {e}")
                 failed = True
+                status = getattr(e, "status", None)
+                if status is None or status >= 500:
+                    _down_until[name] = time.time() + DOWN_SECONDS  # server down: rest it
                 break
             if not item.get("id") or item["id"] in seen:
                 continue
@@ -133,8 +145,6 @@ def scrape_post_comments(post_ids, max_per_post=500, source="auto", log=None, on
     log = log or _quiet
     window = Query(since=since, until=until) if (since or until) else None
     res, seen = Result(), set()
-    if source == "rss":
-        source = "auto"  # RSS has no comments, so let auto pick
     for i, pid in enumerate(post_ids, 1):
         log(f"Comments for post {pid} ({i}/{len(post_ids)})")
         before = len(res.items)

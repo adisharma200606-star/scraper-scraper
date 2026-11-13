@@ -25,6 +25,7 @@ class Query:
     until: int | None = None       # unix timestamp, exclusive
     max: int = 100
     listing: str = "new"           # only used by live sources: new / hot / top / rising
+    scan_max: int = 10000          # when a keyword search has to filter locally, check at most this many
 
     def __post_init__(self):
         self.subreddit = _clean(self.subreddit, ("r/", "/r/"))
@@ -38,6 +39,42 @@ def _clean(value, prefixes):
         if value.lower().startswith(p):
             value = value[len(p):]
     return value.strip("/") or None
+
+
+# ---------- keywords ----------
+
+def keyword_matcher(query):
+    """Build a function that checks text against a search like:  voice "ai agent" OR bot -crypto
+
+    - words and "exact phrases" must all appear (any order, any case)
+    - OR between two terms means either one is fine
+    - -word means the text must NOT contain it
+    - a trailing s/es is allowed, so "agent" also matches "agents"
+    """
+    groups, excludes, pending_or = [], [], False
+    for token in re.findall(r'-?"[^"]+"|\S+', query or ""):
+        if token.upper() == "OR":
+            pending_or = True
+            continue
+        negative = token.startswith("-") and len(token) > 1
+        term = (token[1:] if negative else token).strip('"').lower().strip()
+        if not term:
+            continue
+        pattern = re.compile(r"(?<!\w)" + re.escape(term) + r"(?:s|es)?(?!\w)")
+        if negative:
+            excludes.append(pattern)
+        elif pending_or and groups:
+            groups[-1].append(pattern)
+        else:
+            groups.append([pattern])
+        pending_or = False
+
+    def matches(text):
+        text = (text or "").lower()
+        return (all(any(p.search(text) for p in group) for group in groups)
+                and not any(p.search(text) for p in excludes))
+
+    return matches
 
 
 # ---------- dates ----------

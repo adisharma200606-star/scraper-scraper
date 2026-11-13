@@ -37,6 +37,8 @@ def add_filters(p):
                    help="where to scrape from (default: auto = try each until one works)")
     p.add_argument("--sort", default="new", choices=list(core.SORTS),
                    help="order of the saved results (default: new)")
+    p.add_argument("--scan-max", type=int, default=10000,
+                   help="if a keyword search has to filter locally, check at most this many items (default 10000)")
     p.add_argument("--out", help="file to save to (default: output/<time>_posts.csv). Use - to print JSON")
     p.add_argument("--format", default="csv", choices=["csv", "json", "both"])
 
@@ -45,7 +47,7 @@ def build_query(a, max_items):
     return Query(
         subreddit=a.subreddit, query=a.query, author=a.author,
         since=parse_when(a.since), until=parse_when(a.until, end_of_day=True),
-        max=max_items, listing=getattr(a, "listing", "new"),
+        max=max_items, listing=getattr(a, "listing", "new"), scan_max=a.scan_max,
     )
 
 
@@ -57,7 +59,7 @@ def finish(posts, comments, a, sources, errors):
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
         for f in export.save(posts, comments, out=a.out, fmt=a.format):
-            log(f"saved {f}")
+            log(f"saved {f.resolve()}")
     log(f"done: {len(posts)} posts, {len(comments)} comments"
         + (f" (from {', '.join(sources)})" if sources else ""))
     if not posts and not comments:

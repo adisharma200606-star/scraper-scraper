@@ -15,7 +15,10 @@ from reddit_scraper.sources import arctic_shift, pullpush, reddit_json, rss
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     import time
+    from reddit_scraper import http
     monkeypatch.setattr(time, "sleep", lambda s: None)
+    http._blocked_until.clear()
+    core._down_until.clear()
 
 
 def fake_post(i, ts, sub="test"):
@@ -201,3 +204,132 @@ def test_cli_prints_json(monkeypatch, capsys):
     assert e.value.code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["posts"][0]["id"] == "p1"
+
+
+# ---------- keyword matching ----------
+
+def test_keyword_matcher():
+    from reddit_scraper.models import keyword_matcher
+    m = keyword_matcher("voice ai agent")
+    assert m("Building a Voice AI Agents stack")
+    assert not m("she said voice agent")          # 'ai' must be a word, not inside 'said'
+    m = keyword_matcher('"refund policy" OR returns -spam')
+    assert m("our refund policy") and m("Returns are hard")
+    assert not m("returns spam") and not m("refund the policy")
+
+
+# ---------- Arctic Shift keyword fallback ----------
+
+def _arctic_fake(monkeypatch, fail_keyword=True):
+    rows = [dict(fake_post(i, 1000 - i), title=t) for i, t in enumerate(
+        ["Voice AI agents are here", "cooking tips", "my voice ai agent broke", "random"])]
+    calls = []
+
+    def fake_get_json(url, params=None, **kw):
+        calls.append(dict(params))
+        if fail_keyword and "query" in params:
+            raise SourceError("HTTP 422 from arctic-shift: Timeout. Maybe slow down a bit", 422)
+        return {"data": rows if "before" not in params else []}
+
+    monkeypatch.setattr("reddit_scraper.sources._paging.get_json", fake_get_json)
+    return calls
+
+
+def test_arctic_keyword_timeout_falls_back_to_local_scan(monkeypatch):
+    calls = _arctic_fake(monkeypatch)
+    logs = []
+    got = list(arctic_shift.posts(Query(subreddit="ai", query="voice ai agent", max=10), logs.append))
+    assert [p["title"] for p in got] == ["Voice AI agents are here", "my voice ai agent broke"]
+    assert "query" in calls[0] and "query" not in calls[1]
+    assert any("filtering locally" in m for m in logs)
+
+
+def test_arctic_keyword_without_subreddit_explains(monkeypatch):
+    _arctic_fake(monkeypatch)
+    with pytest.raises(SourceError, match="Add a subreddit"):
+        list(arctic_shift.posts(Query(query="voice ai agent")))
+
+
+# ---------- blocks and retries ----------
+
+def test_reddit_json_block_is_remembered(monkeypatch):
+    calls = []
+
+    def blocked(url, params=None, **kw):
+        calls.append(url)
+        raise SourceError("HTTP 403 from www.reddit.com", 403)
+
+    monkeypatch.setattr(reddit_json, "get_json", blocked)
+    for _ in range(3):
+        with pytest.raises(SourceError, match="blocking"):
+            list(reddit_json.posts(Query(subreddit="ai")))
+    assert len(calls) == 1  # only asked Reddit once, then skipped
+
+
+def test_server_errors_like_526_are_retried(monkeypatch):
+    from reddit_scraper import http
+
+    class R:
+        def __init__(self, code):
+            self.status_code, self.headers = code, {}
+
+    codes = iter([526, 503, 200])
+    monkeypatch.setattr(http.requests, "get", lambda *a, **k: R(next(codes)))
+    assert http.get("https://api.pullpush.io/x").status_code == 200
+
+
+# ---------- RSS ----------
+
+FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">{}</feed>"""
+
+ENTRY = """<entry><author><name>/u/{author}</name></author><category term="ai" label="r/ai"/>
+<content type="html">{content}</content><id>{eid}</id><link href="{link}"/>
+<published>2026-11-0{day}T10:00:00+00:00</published><title>{title}</title></entry>"""
+
+
+def _rss_fake(monkeypatch, xml):
+    class Resp:
+        content = xml.encode()
+
+    calls = []
+    monkeypatch.setattr(rss, "get", lambda url, params=None, **kw: calls.append(url) or Resp())
+    return calls
+
+
+def test_rss_keyword_filters_locally_with_post_text(monkeypatch):
+    body = "&lt;div class=&quot;md&quot;&gt;&lt;p&gt;We built a voice AI agent for clinics&lt;/p&gt;&lt;/div&gt; submitted by /u/x [link] [comments]"
+    entries = [
+        ENTRY.format(author="a", content=body, eid="t3_aaa", link="https://www.reddit.com/r/ai/comments/aaa/x/", day=3, title="Show and tell"),
+        ENTRY.format(author="b", content="", eid="t3_bbb", link="https://www.reddit.com/r/ai/comments/bbb/y/", day=2, title="Unrelated"),
+    ]
+    calls = _rss_fake(monkeypatch, FEED.format("".join(entries)))
+    got = list(rss.posts(Query(subreddit="ai", query="voice ai agent", max=10)))
+    assert [p["id"] for p in got] == ["aaa"]
+    assert got[0]["selftext"] == "We built a voice AI agent for clinics"
+    assert calls[0].endswith("/r/ai/new/.rss")  # normal feed, not the broken search feed
+
+
+def test_rss_comments_for_post(monkeypatch):
+    entries = [
+        ENTRY.format(author="op", content="post", eid="t3_aaa", link="https://www.reddit.com/r/ai/comments/aaa/x/", day=1, title="Post"),
+        ENTRY.format(author="c1", content="&lt;p&gt;great point&lt;/p&gt;", eid="t1_c1", link="https://www.reddit.com/r/ai/comments/aaa/x/c1/", day=2, title="c1 on Post"),
+    ]
+    _rss_fake(monkeypatch, FEED.format("".join(entries)))
+    got = list(rss.comments_for_post("aaa", 50))
+    assert [(c["id"], c["post_id"], c["author"], c["body"]) for c in got] == [("c1", "aaa", "c1", "great point")]
+
+
+def test_dead_server_is_rested_between_posts(monkeypatch):
+    calls = []
+
+    def dead(pid, n, log=None):
+        calls.append(pid)
+        raise SourceError("api.pullpush.io kept failing (HTTP 526)", 526)
+        yield
+
+    for mod in (arctic_shift, reddit_json, rss):
+        monkeypatch.setattr(mod, "comments_for_post", lambda pid, n, log=None: iter([]))
+    monkeypatch.setattr(pullpush, "comments_for_post", dead)
+    core.scrape_post_comments(["a", "b", "c"])
+    assert calls == ["a"]  # tried once, then skipped for the next posts
