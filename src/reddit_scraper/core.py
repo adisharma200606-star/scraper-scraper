@@ -229,7 +229,8 @@ def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, i
             on_item(item)
 
     if not subs:
-        log(f'No subreddit given, so finding the best ones for "{q.query}"...')
+        shown = q.query if '"' in q.query else f'"{q.query}"'
+        log(f"No subreddit given, so finding the best ones for {shown}...")
         if include_search and source in ("auto", "rss"):
             log("Searching all of Reddit first...")
             sample = _sample_all_of_reddit(q, max(1, min(100, q.max // 2)), log, take)
@@ -240,7 +241,8 @@ def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, i
             sample = _sample_all_of_reddit(q, 50, log)  # only used to rank subreddits
         subs = find_subreddits(q.query, find_n, log, sample)
         if not subs:
-            log("Couldn't find subreddits automatically. Type one in and try again.")
+            log("Couldn't find subreddits automatically (finding them needs Reddit itself). "
+                "Type one or more subreddits in and try again; that works through Arctic Shift.")
             combined.errors.append("no subreddits found")
             return combined
         log("Searching: " + ", ".join(f"r/{s}" for s in subs))

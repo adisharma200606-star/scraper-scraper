@@ -13,6 +13,22 @@ USER_AGENT = "python:reddit-scraper:1.0 (personal research script)"
 
 MAX_WAIT = 60  # never sleep longer than this on a single retry
 
+# Minimum gap between requests to the same site. Reddit only allows a few requests a minute
+# without a login, and going over gets your connection refused (429/403) for 10+ minutes.
+# Every Reddit source shares this, so together they stay under the limit.
+MIN_GAP_SECONDS = {"www.reddit.com": 6.0, "old.reddit.com": 6.0}
+_last_request_at = {}
+
+
+def _pace(url):
+    host = _host(url)
+    gap = MIN_GAP_SECONDS.get(host)
+    if gap:
+        wait = _last_request_at.get(host, 0) + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+    _last_request_at[host] = time.time()
+
 
 class SourceError(Exception):
     """A source failed in a way that retrying won't fix (blocked, gone, bad query)."""
@@ -66,6 +82,7 @@ def get(url, params=None, *, retries=3, timeout=30, log=None, retry_slowdowns=Tr
     last_problem, last_status = "unknown error", None
     for attempt in range(retries + 1):
         try:
+            _pace(url)
             resp = requests.get(
                 url, params=params, timeout=timeout, headers={"User-Agent": USER_AGENT}
             )
@@ -90,7 +107,9 @@ def get(url, params=None, *, retries=3, timeout=30, log=None, retry_slowdowns=Tr
             last_status = resp.status_code
             if _should_retry(resp, retry_slowdowns):
                 last_problem = f"HTTP {resp.status_code}"
-                if attempt < retries:
+                # Reddit: hammering it while it's limiting you only extends the penalty.
+                give_up = resp.status_code == 429 and _host(url) in MIN_GAP_SECONDS and attempt >= 1
+                if attempt < retries and not give_up:
                     wait = _wait_seconds(resp, delay)
                     if log:
                         log(f"  {last_problem} from {_host(url)}, waiting {wait:.0f}s and retrying")

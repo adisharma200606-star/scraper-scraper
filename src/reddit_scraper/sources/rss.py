@@ -6,7 +6,6 @@ subreddit's normal feed and filter locally (Reddit's search feed is unreliable).
 """
 import html
 import re
-import time
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime
@@ -18,8 +17,12 @@ from ..models import full_link, iso, keyword_matcher
 NAME = "rss"
 BASE = "https://www.reddit.com"
 NS = {"a": "http://www.w3.org/2005/Atom"}
-PAGE_SLEEP = 3.0
 MAX_PAGES = 10  # Reddit feeds stop around 1000 items anyway
+SEARCH_PAGES = 2  # all-of-Reddit search: enough to see where a topic comes up, without
+                  # spending Reddit's small request allowance
+LIMITED_MSG = ("Reddit is refusing requests from your connection right now (HTTP {status}), "
+               "usually because of too many requests in a short time. It normally clears in "
+               "10-15 minutes. Until then, type a subreddit: that path doesn't need Reddit")
 
 
 def _parse_time(text):
@@ -39,14 +42,17 @@ def _html_to_text(raw):
     return text.strip()
 
 
-def _entries(path, params, log, retries=3):
+def _entries(path, params, log, retries=3, can_block=True):
+    """Fetch one feed page. can_block=False: a refusal here doesn't switch off the other feeds."""
     if is_blocked(NAME):
-        raise SourceError("Reddit is blocking RSS for this network; skipping it for now", 403)
+        raise SourceError(LIMITED_MSG.format(status="403/429"), 403)
     try:
         resp = get(BASE + path, params, log=log, retries=retries)
     except SourceError as e:
-        if e.status in (401, 403):
-            mark_blocked(NAME)
+        if e.status in (401, 403, 429):
+            if can_block:
+                mark_blocked(NAME)
+            raise SourceError(LIMITED_MSG.format(status=e.status), e.status)
         raise
     try:
         root = ET.fromstring(resp.content)
@@ -100,16 +106,16 @@ def _to_comment(entry, post_id, fallback_sub):
     }
 
 
-def _walk(path, convert, q, log):
+def _walk(path, convert, q, log, max_pages=MAX_PAGES, can_block=True):
     """Read a feed page by page, newest first, keeping items that pass the filters."""
     match = keyword_matcher(q.query) if q.query else None
     seen, after, count = set(), None, 0
-    for _ in range(MAX_PAGES):
+    for _ in range(max_pages):
         params = {"limit": 100}
         if after:
             params["after"] = after
         items = []
-        for entry in _entries(path, params, log):
+        for entry in _entries(path, params, log, can_block=can_block):
             item = convert(entry)
             if item and item["id"] not in seen:
                 seen.add(item["id"])
@@ -131,7 +137,7 @@ def _walk(path, convert, q, log):
             if count >= q.max:
                 return
         after = ("t1_" if "body" in items[-1] else "t3_") + items[-1]["id"]
-        time.sleep(PAGE_SLEEP)
+        # (no sleep needed: http.py already spaces out requests to Reddit)
 
 
 def posts(q, log=None):
@@ -185,7 +191,8 @@ def ping():
 def find_subreddits(query, limit=10, log=None):
     """Ask Reddit which communities match the keywords. Returns [{name, title, about}], best first."""
     found = []
-    for entry in _entries("/subreddits/search.rss", {"q": query, "limit": max(limit, 25)}, log):
+    params = {"q": query, "limit": max(limit, 25)}
+    for entry in _entries("/subreddits/search.rss", params, log, retries=1, can_block=False):
         link_el = entry.find("a:link", NS)
         m = re.search(r"/r/([A-Za-z0-9_]+)", link_el.get("href") if link_el is not None else "")
         if not m:
@@ -206,4 +213,5 @@ def search_all(q, log=None):
         raise Unsupported("searching all of Reddit needs keywords")
     search = q.query + (f" author:{q.author}" if q.author else "")
     path = "/search.rss?" + urlencode({"q": search, "sort": "new", "type": "link"})
-    yield from _walk(path, lambda e: _to_post(e, None), replace(q, query=None), log)
+    yield from _walk(path, lambda e: _to_post(e, None), replace(q, query=None), log,
+                     max_pages=SEARCH_PAGES, can_block=False)

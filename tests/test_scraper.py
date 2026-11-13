@@ -441,3 +441,46 @@ def test_insights_skip_unscorable_posts():
     rss_posts = [_p(50 + i, "t", None, source="rss") for i in range(20)]    # no scores
     [s] = insights.summarize(fresh + rss_posts, now=now)
     assert s["scored"] == 0 and "not enough scored posts" in s["line"]
+
+
+# ---------- Reddit rate limits ----------
+
+def test_reddit_requests_are_spaced_out(monkeypatch):
+    from reddit_scraper import http
+    import time as real_time
+    clock = {"now": 1000.0}
+    slept = []
+    monkeypatch.setattr(real_time, "time", lambda: clock["now"])
+    monkeypatch.setattr(real_time, "sleep", lambda s: (slept.append(s), clock.__setitem__("now", clock["now"] + s)))
+    http._last_request_at.clear()
+    http._pace("https://www.reddit.com/a")
+    http._pace("https://www.reddit.com/b")
+    http._pace("https://arctic-shift.photon-reddit.com/x")  # other sites aren't paced
+    assert slept == [6.0]
+
+
+def test_reddit_429_is_retried_only_once(monkeypatch):
+    from reddit_scraper import http
+
+    class R:
+        status_code, headers = 429, {}
+        def json(self):
+            raise ValueError
+
+    calls = []
+    monkeypatch.setattr(http.requests, "get", lambda *a, **k: calls.append(1) or R())
+    monkeypatch.setattr(http, "_pace", lambda url: None)
+    with pytest.raises(SourceError):
+        http.get("https://www.reddit.com/r/x/new/.rss")
+    assert len(calls) == 2
+
+
+def test_failed_reddit_search_does_not_switch_off_rss(monkeypatch):
+    def refuse(url, params=None, **kw):
+        raise SourceError("HTTP 403 from www.reddit.com", 403)
+
+    monkeypatch.setattr(rss, "get", refuse)
+    with pytest.raises(SourceError, match="refusing requests"):
+        list(rss.search_all(Query(query="macbook pro")))
+    from reddit_scraper import http
+    assert not http.is_blocked("rss")

@@ -76,6 +76,11 @@ The only runtime dependency is `requests`.
 - **Reddit JSON** (`www.reddit.com/....json`) is blocked (403) on many networks, including the
   home network this was built on, whatever user agent is used. After the first 403 it's skipped
   for 10 minutes.
+- **Reddit rate-limits hard without a login.** A burst of requests gets the whole connection
+  refused (429, then 403, even for plain `curl`) for roughly 10-15 minutes. So `http.py` spaces
+  every request to reddit.com at least 6 seconds apart (shared by all Reddit sources), retries a
+  Reddit 429 only once, and the subreddit finder uses at most 2 search pages. A refused search
+  doesn't switch off the rest of RSS.
 - **Reddit RSS** works on that same network. It gives recent posts with text, and comment
   threads (no scores). Its per-subreddit search feed returned 404, so keyword filtering on RSS
   is done locally on the normal feed.
