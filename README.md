@@ -17,6 +17,10 @@ It can be used three ways: a simple web page, the command line, or by asking Cla
 - **Auto mode:** tries each source in turn, so if one is down or blocked the next one takes over, picking up where the last one stopped
 - Retries and waits on rate limits by itself
 - Removes duplicates
+- **Leaves out removed posts:** posts that moderators, AutoModerator or Reddit took down are
+  skipped (it keeps reading until it has enough live ones), and every row has a `status` column.
+  Keep them with `--include-removed` or "Removed posts: keep" on the page. Posts from the last
+  ~5 days show "not rechecked yet", since the archive hasn't rechecked them
 - Saves to CSV or JSON, or copies straight into Google Sheets
 - Light and dark mode web page that runs only on your own computer
 - One dependency (`requests`)

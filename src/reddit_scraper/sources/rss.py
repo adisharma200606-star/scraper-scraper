@@ -6,13 +6,14 @@ subreddit's normal feed and filter locally (Reddit's search feed is unreliable).
 """
 import html
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlencode
 
 from ..http import SourceError, Unsupported, get, is_blocked, mark_blocked
-from ..models import full_link, iso, keyword_matcher
+from ..models import LIVE, full_link, iso, keyword_matcher
 
 NAME = "rss"
 BASE = "https://www.reddit.com"
@@ -42,9 +43,18 @@ def _html_to_text(raw):
     return text.strip()
 
 
+# Reddit's two search pages (all-of-Reddit search and subreddit search) are refused together.
+# Once one says no, the other isn't asked for a while: asking again only waits and extends the
+# block. The normal subreddit feeds are separate and keep working.
+SEARCH_REST_SECONDS = 10 * 60
+_search_refused_until = 0.0
+
+
 def _entries(path, params, log, retries=3, can_block=True):
-    """Fetch one feed page. can_block=False: a refusal here doesn't switch off the other feeds."""
-    if is_blocked(NAME):
+    """Fetch one feed page. can_block=False (search pages): a refusal only pauses searching,
+    it doesn't switch off the other feeds."""
+    global _search_refused_until
+    if is_blocked(NAME) or (not can_block and time.time() < _search_refused_until):
         raise SourceError(LIMITED_MSG.format(status="403/429"), 403)
     try:
         resp = get(BASE + path, params, log=log, retries=retries)
@@ -52,6 +62,8 @@ def _entries(path, params, log, retries=3, can_block=True):
         if e.status in (401, 403, 429):
             if can_block:
                 mark_blocked(NAME)
+            else:
+                _search_refused_until = time.time() + SEARCH_REST_SECONDS
             raise SourceError(LIMITED_MSG.format(status=e.status), e.status)
         raise
     # Reddit's feeds never contain a <!DOCTYPE> or <!ENTITY>. Those are how a booby-trapped XML
@@ -95,7 +107,7 @@ def _to_post(entry, fallback_sub):
         "title": entry.findtext("a:title", "", NS), "author": c["author"],
         "score": None, "num_comments": None, "created": iso(c["created"]), "flair": None,
         "selftext": c["text"], "url": c["link"], "permalink": full_link(c["link"]),
-        "over_18": False, "created_utc": c["created"], "source": NAME,
+        "over_18": False, "created_utc": c["created"], "source": NAME, "status": LIVE,
     }
 
 
@@ -107,7 +119,7 @@ def _to_comment(entry, post_id, fallback_sub):
         "id": c["entry_id"][3:], "post_id": post_id, "parent_id": None,
         "subreddit": c["subreddit"] or fallback_sub, "author": c["author"], "body": c["text"],
         "score": None, "created": iso(c["created"]), "permalink": full_link(c["link"]),
-        "created_utc": c["created"], "source": NAME,
+        "created_utc": c["created"], "source": NAME, "status": LIVE,
     }
 
 

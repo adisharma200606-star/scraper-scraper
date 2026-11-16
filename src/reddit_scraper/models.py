@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 POST_FIELDS = [
     "id", "subreddit", "title", "author", "score", "num_comments", "created",
-    "flair", "selftext", "url", "permalink", "over_18", "created_utc", "source",
+    "flair", "selftext", "url", "permalink", "over_18", "created_utc", "source", "status",
 ]
 COMMENT_FIELDS = [
     "id", "post_id", "parent_id", "subreddit", "author", "body", "score",
-    "created", "permalink", "created_utc", "source",
+    "created", "permalink", "created_utc", "source", "status",
 ]
 
 
@@ -26,6 +26,7 @@ class Query:
     max: int = 100
     listing: str = "new"           # only used by live sources: new / hot / top / rising
     scan_max: int = 10000          # when a keyword search has to filter locally, check at most this many
+    include_removed: bool = False  # keep posts/comments that moderators or Reddit removed
 
     def __post_init__(self):
         self.subreddit = _clean(self.subreddit, ("r/", "/r/"))
@@ -169,6 +170,58 @@ def full_link(permalink):
 # Arctic Shift, PullPush and Reddit's own JSON all use Reddit's field names,
 # so one converter covers all three.
 
+# ---------- removed and deleted posts ----------
+# Arctic Shift saves a post seconds after it's posted, then checks it again a few days later
+# and records whether it was removed. Many posts are: 78 of 100 sampled in one big tech
+# subreddit (mostly AutoModerator). Removed posts are left out by default, so nobody learns
+# from posts the community didn't keep.
+
+REMOVAL_LABELS = {
+    "moderator": "removed by moderators",
+    "automod_filtered": "removed by AutoModerator",
+    "reddit": "removed by Reddit",
+    "anti_evil_ops": "removed by Reddit",
+    "community_ops": "removed by Reddit",
+    "content_takedown": "removed by Reddit (legal takedown)",
+    "copyright_takedown": "removed by Reddit (copyright)",
+    "deleted": "deleted by author",
+    "author": "deleted by author",
+}
+LIVE = "live"
+NOT_RECHECKED = "not rechecked yet"  # archived before moderators could act; status unknown
+
+
+def visibility(d, source, text_field):
+    """Whether a raw post/comment is still up, removed, or deleted by its author."""
+    meta = d.get("_meta") if isinstance(d.get("_meta"), dict) else {}
+    category = d.get("removed_by_category") or meta.get("removal_type")
+    if category:
+        return REMOVAL_LABELS.get(category, f"removed ({category})")
+    text = d.get(text_field)
+    if text == "[removed]":
+        return "removed"
+    if text == "[deleted]" or meta.get("was_deleted_later"):
+        return "deleted by author"
+    # Archives store a snapshot: until Arctic Shift's second check, nobody knows yet.
+    # PullPush never rechecks. Reddit's own pages and feeds show the current state.
+    if source == "pullpush" or (source == "arctic_shift" and not meta.get("retrieved_2nd_on")):
+        return NOT_RECHECKED
+    return LIVE
+
+
+def is_removed(item):
+    """True for posts/comments taken down by moderators, AutoModerator or Reddit.
+    (Deleted by the author is not counted as removed.)"""
+    return str(item.get("status") or "").startswith("removed")
+
+
+def left_out_message(counts):
+    """'left out 57 removed (45 removed by AutoModerator, 12 removed by moderators)'"""
+    detail = ", ".join(f"{n} {why}" for why, n in counts.most_common())
+    return (f"  left out {sum(counts.values())} removed ({detail}). "
+            "To keep them: --include-removed, or 'Removed posts: keep' on the web page")
+
+
 def post_from_reddit(d, source):
     created = to_int(d.get("created_utc"))
     return {
@@ -186,6 +239,7 @@ def post_from_reddit(d, source):
         "over_18": bool(d.get("over_18")),
         "created_utc": created,
         "source": source,
+        "status": visibility(d, source, "selftext"),
     }
 
 
@@ -209,4 +263,5 @@ def comment_from_reddit(d, source):
         "permalink": full_link(permalink),
         "created_utc": created,
         "source": source,
+        "status": visibility(d, source, "body"),
     }

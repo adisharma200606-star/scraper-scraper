@@ -3,8 +3,11 @@
 API docs: https://github.com/ArthurHeitmann/arctic_shift/blob/master/api/README.md
 Note: for posts younger than ~36 hours, score and comment counts may still be 0 or 1.
 """
+from collections import Counter
+
 from ..http import SourceError, get_json
-from ..models import comment_from_reddit, keyword_matcher, post_from_reddit
+from ..models import (comment_from_reddit, is_removed, keyword_matcher, left_out_message,
+                      post_from_reddit)
 from ._paging import walk_backwards
 
 NAME = "arctic_shift"
@@ -31,22 +34,63 @@ def _walk(endpoint, params, max_items, log, patient=True):
     )
 
 
+def _live_only(items, q, left_out):
+    """Pass items on, leaving out removed ones unless asked to keep them (counted in left_out)."""
+    for item in items:
+        if not q.include_removed and is_removed(item):
+            left_out[item["status"]] += 1
+            continue
+        yield item
+
+
+def _say_left_out(left_out, log):
+    if log and left_out:
+        log(left_out_message(left_out))
+
+
+def _first(items, n, on_done):
+    """Yield up to n items, calling on_done() once at the end.
+
+    on_done runs BEFORE the last item is handed over: whoever reads this usually stops
+    asking as soon as it has enough, so anything after the last yield would never run.
+    """
+    got = 0
+    for item in items:
+        got += 1
+        if got >= n:
+            on_done()
+            yield item
+            return
+        yield item
+    on_done()
+
+
 def _scan(endpoint, q, match, convert, text_of, log):
     """Page through everything in q's date range ourselves and keep what matches the keywords."""
-    scanned = found = 0
-    for row in _walk(endpoint, _filters(q), q.scan_max, log):
-        scanned += 1
-        if log and scanned % 1000 == 0:
-            log(f"  checked {scanned}, {found} matched so far")
-        if match(text_of(row)):
-            found += 1
-            yield convert(row, NAME)
-            if found >= q.max:
-                break
-    if log:
-        log(f"  checked {scanned}, {found} matched")
-        if scanned >= q.scan_max:
-            log(f"  stopped after checking {q.scan_max}. Narrow the dates or raise the scan limit for more")
+    counts = {"scanned": 0, "found": 0}
+    left_out = Counter()
+
+    def matching():
+        for row in _walk(endpoint, _filters(q), q.scan_max, log):
+            counts["scanned"] += 1
+            if log and counts["scanned"] % 1000 == 0:
+                log(f"  checked {counts['scanned']}, {counts['found']} matched so far")
+            if match(text_of(row)):
+                yield convert(row, NAME)
+
+    def counted(items):
+        for item in items:
+            counts["found"] += 1
+            yield item
+
+    def report():
+        if log:
+            log(f"  checked {counts['scanned']}, {counts['found']} matched")
+            if counts["scanned"] >= q.scan_max:
+                log(f"  stopped after checking {q.scan_max}. Narrow the dates or raise the scan limit for more")
+        _say_left_out(left_out, log)
+
+    yield from _first(counted(_live_only(matching(), q, left_out)), q.max, report)
 
 
 def _search(endpoint, keyword_param, q, convert, text_of, log):
@@ -56,19 +100,26 @@ def _search(endpoint, keyword_param, q, convert, text_of, log):
     Plan B: if that errors (it often times out with HTTP 422), page through
     the subreddit's posts ourselves and keep the ones that match the keywords.
     Slower, but it uses plain browsing, which keeps working.
+
+    Removed posts are skipped, and we keep reading until we have q.max that are still up
+    (reading at most q.scan_max), so a heavily moderated subreddit still gives enough results.
     """
     params = _filters(q)
+    cap = q.max if q.include_removed else max(q.max, q.scan_max)
+    left_out = Counter()
+    say = lambda: _say_left_out(left_out, log)  # noqa: E731
     if not q.query:
-        for row in _walk(endpoint, params, q.max, log):
-            yield convert(row, NAME)
+        rows = _walk(endpoint, params, cap, log)
+        yield from _first(_live_only((convert(r, NAME) for r in rows), q, left_out), q.max, say)
         return
 
     got = 0
     try:
         # Not patient: if their keyword search is struggling, go straight to plan B.
-        for row in _walk(endpoint, dict(params, **{keyword_param: q.query}), q.max, log, patient=False):
+        rows = _walk(endpoint, dict(params, **{keyword_param: q.query}), cap, log, patient=False)
+        for item in _first(_live_only((convert(r, NAME) for r in rows), q, left_out), q.max, say):
             got += 1
-            yield convert(row, NAME)
+            yield item
         return
     except SourceError as e:
         if got:

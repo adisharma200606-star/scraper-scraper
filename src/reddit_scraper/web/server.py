@@ -43,6 +43,7 @@ def run_job(opts, emit):
         subreddit=opts.get("subreddit"), query=opts.get("query"), author=opts.get("author"),
         since=parse_when(opts.get("since")), until=parse_when(opts.get("until"), end_of_day=True),
         max=max(1, _int(opts.get("max"), 100)), listing=opts.get("listing") or "new",
+        include_removed=opts.get("removed") == "keep",
     )
     sources, errors, checks = set(), [], []
     n_posts = n_comments = 0
@@ -66,7 +67,8 @@ def run_job(opts, emit):
         post_ids = [p for p in post_ids if p]
         if post_ids:
             res = core.scrape_post_comments(
-                post_ids, q.max, source, log=log, on_item=on_comment, since=q.since, until=q.until)
+                post_ids, q.max, source, log=log, on_item=on_comment, since=q.since, until=q.until,
+                include_removed=q.include_removed)
         elif q.subreddit or q.author or q.query:
             res = core.search_comments(q, source, log=log, on_item=on_comment,
                                        find_n=find_n, on_subreddits=on_subs)
@@ -89,6 +91,7 @@ def run_job(opts, emit):
                 ids, max(1, _int(opts.get("comments_max"), 500)), source, log=log, on_item=on_comment,
                 since=parse_when(opts.get("c_since")),
                 until=parse_when(opts.get("c_until"), end_of_day=True),
+                include_removed=q.include_removed,
             )
             sources.update(cres.sources)
             errors += cres.errors

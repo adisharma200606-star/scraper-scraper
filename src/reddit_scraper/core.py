@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from .http import Unsupported
-from .models import Query, _clean, check_subreddit
+from .models import Query, _clean, check_subreddit, is_removed, left_out_message
 from .sources import SOURCES
 
 # The order sources are tried in when source="auto".
@@ -79,6 +79,7 @@ def _run(make_iter, order, source, max_items, log, on_item, q=None, res=None, se
         log(f"Trying {name}...")
         it = _lazy(make_iter, SOURCES[name], remaining, res.items[start:])
         got, failed = 0, False
+        left_out = Counter()
         while True:
             try:
                 item = next(it)
@@ -100,12 +101,17 @@ def _run(make_iter, order, source, max_items, log, on_item, q=None, res=None, se
                 continue
             if q is not None and not _in_range(item, q):
                 continue
+            if q is not None and not q.include_removed and is_removed(item):
+                left_out[item["status"]] += 1  # Arctic Shift already skips these; this covers the rest
+                continue
             seen.add(item["id"])
             res.items.append(item)
             got += 1
             on_item(item)
             if len(res.items) - start >= max_items:
                 break
+        if left_out:
+            log(left_out_message(left_out))
         if not failed:
             res.completed.append(name)  # it searched everything it was asked to, even if it found 0
         if got:
@@ -146,13 +152,13 @@ def scrape_comments(q, source="auto", log=None, on_item=None):
 
 
 def scrape_post_comments(post_ids, max_per_post=500, source="auto", log=None, on_item=None,
-                         since=None, until=None):
+                         since=None, until=None, include_removed=False):
     """Fetch the comments under each of the given posts.
 
     since/until (unix timestamps) optionally keep only comments made in that window.
     """
     log = log or _quiet
-    window = Query(since=since, until=until) if (since or until) else None
+    window = Query(since=since, until=until, include_removed=include_removed)
     res, seen = Result(), set()
     for i, pid in enumerate(post_ids, 1):
         log(f"Comments for post {pid} ({i}/{len(post_ids)})")

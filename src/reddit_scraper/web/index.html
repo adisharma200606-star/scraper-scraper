@@ -184,6 +184,15 @@
         </div>
       </div>
 
+      <div class="field">
+        <label for="removed">Removed posts</label>
+        <select id="removed" name="removed">
+          <option value="leave_out">Leave out (recommended)</option>
+          <option value="keep">Keep, marked in the status column</option>
+        </select>
+        <div class="hint">Many posts get removed by moderators or AutoModerator. Posts under ~5 days old show "not rechecked yet": they might still be removed.</div>
+      </div>
+
       <div class="only-posts">
         <div class="field">
           <label for="hydrate">Also get comments for</label>
@@ -268,8 +277,8 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
-const POST_FIELDS = ["id","subreddit","title","author","score","num_comments","created","flair","selftext","url","permalink","over_18","created_utc","source"];
-const COMMENT_FIELDS = ["id","post_id","parent_id","subreddit","author","body","score","created","permalink","created_utc","source"];
+const POST_FIELDS = ["id","subreddit","title","author","score","num_comments","created","flair","selftext","url","permalink","over_18","created_utc","source","status"];
+const COMMENT_FIELDS = ["id","post_id","parent_id","subreddit","author","body","score","created","permalink","created_utc","source","status"];
 const SHOW_ROWS = 500;
 
 let mode = "posts", tab = "posts", posts = [], comments = [], ctrl = null, drawQueued = false;
@@ -309,7 +318,7 @@ document.querySelectorAll("[data-range]").forEach(b => b.onclick = () => {
 });
 $("hydrate").onchange = () => $("hydrateNField").style.visibility = $("hydrate").value === "top" ? "visible" : "hidden";
 
-const SAVED = ["source","subreddit","query","author","max","listing","hydrate","hydrate_n","comments_max","find_n"];
+const SAVED = ["source","subreddit","query","author","max","listing","hydrate","hydrate_n","comments_max","find_n","removed"];
 try {
   const saved = JSON.parse(store.get("form") || "{}");
   SAVED.forEach(k => { if (saved[k] != null) $(k).value = saved[k]; });

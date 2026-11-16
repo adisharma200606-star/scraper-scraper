@@ -8,7 +8,7 @@ import pytest
 
 from reddit_scraper import core, export
 from reddit_scraper.http import SourceError
-from reddit_scraper.models import Query, parse_when, post_id_from
+from reddit_scraper.models import Query, parse_when, post_from_reddit, post_id_from
 from reddit_scraper.sources import arctic_shift, pullpush, reddit_json, rss
 
 # The real versions, kept before the autouse fixture below swaps them for offline fakes.
@@ -24,6 +24,7 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
     http._blocked_until.clear()
     core._down_until.clear()
+    rss._search_refused_until = 0.0
     # The empty-result explainer makes its own requests. By default pretend the archive's
     # subreddit lookup can't be reached; tests that need it fake it.
 
@@ -792,3 +793,108 @@ def test_web_labels_input_mistakes_as_yours(web):
     _, data = web("POST", "/api/run", json.dumps({"subreddit": "not a/name"}), ct)
     ev = json.loads(data.splitlines()[0])
     assert ev["type"] == "error" and ev["yours"] is True and "subreddit name" in ev["msg"]
+
+
+def test_refused_reddit_search_is_not_asked_again_straight_away(monkeypatch):
+    calls = []
+
+    def fake_get(url, params=None, **kw):
+        calls.append(url)
+        raise SourceError("HTTP 403 from www.reddit.com", 403)
+    monkeypatch.setattr("reddit_scraper.sources.rss.get", fake_get)
+    with pytest.raises(SourceError):
+        list(rss.search_all(Query(query="donald trump")))
+    with pytest.raises(SourceError, match="refusing"):
+        rss.find_subreddits("donald trump")
+    assert len(calls) == 1  # the subreddit search didn't knock again (and wait) after the refusal
+
+
+# ---------- removed posts ----------
+
+def test_visibility_reads_the_archive_records():
+    from reddit_scraper.models import visibility
+    checked = {"_meta": {"retrieved_2nd_on": 1}}
+    assert visibility(dict(checked, removed_by_category="moderator"), "arctic_shift", "selftext") == "removed by moderators"
+    assert visibility(dict(checked, removed_by_category="automod_filtered"), "arctic_shift", "selftext") == "removed by AutoModerator"
+    assert visibility({"_meta": {"retrieved_2nd_on": 1, "removal_type": "reddit"}}, "arctic_shift", "selftext") == "removed by Reddit"
+    assert visibility(dict(checked, selftext="[removed]"), "arctic_shift", "selftext") == "removed"
+    assert visibility(dict(checked, body="[deleted]"), "arctic_shift", "body") == "deleted by author"
+    assert visibility(checked, "arctic_shift", "selftext") == "live"
+    assert visibility({}, "arctic_shift", "selftext") == "not rechecked yet"   # too new to know
+    assert visibility({}, "pullpush", "selftext") == "not rechecked yet"
+    assert visibility({}, "reddit_json", "selftext") == "live"
+
+
+def _arctic_rows_with_removals(monkeypatch):
+    """150 newest-first posts. The newest 100 (a whole page) were removed by AutoModerator."""
+    rows = [dict(fake_post(i, 10_000 - i), title=f"voice post {i}", _meta={"retrieved_2nd_on": 1},
+                 removed_by_category="automod_filtered" if i < 100 else None) for i in range(150)]
+
+    def fake_get_json(url, params=None, **kw):
+        if "query" in params:
+            raise SourceError("HTTP 422 from arctic-shift: Timeout. Maybe slow down a bit", 422)
+        before = params.get("before", 10**9)
+        return {"data": [r for r in rows if r["created_utc"] < before][:100]}
+    monkeypatch.setattr("reddit_scraper.sources._paging.get_json", fake_get_json)
+
+
+def test_removed_posts_are_left_out_and_reading_continues(monkeypatch):
+    _arctic_rows_with_removals(monkeypatch)
+    logs = []
+    got = list(arctic_shift.posts(Query(subreddit="test", max=3), logs.append))
+    assert [p["id"] for p in got] == ["p100", "p101", "p102"]     # read on past the removed page
+    assert all(p["status"] == "live" for p in got)
+    assert any("left out 100" in m and "AutoModerator" in m for m in logs)
+
+
+def test_summary_lines_appear_even_when_the_reader_stops_early(monkeypatch):
+    # core stops asking once it has enough, so the summary must come before the last post
+    _arctic_rows_with_removals(monkeypatch)
+    logs = []
+    it = arctic_shift.posts(Query(subreddit="test", query="voice", max=2), logs.append)
+    next(it), next(it)  # take exactly 2, then stop like core does
+    assert any("checked" in m and "2 matched" in m for m in logs)
+    assert any("left out 100" in m for m in logs)
+
+
+def test_removed_posts_are_kept_when_asked(monkeypatch):
+    _arctic_rows_with_removals(monkeypatch)
+    got = list(arctic_shift.posts(Query(subreddit="test", max=3, include_removed=True)))
+    assert [p["status"] for p in got] == ["removed by AutoModerator"] * 3
+
+
+def test_keyword_scan_leaves_out_removed_posts(monkeypatch):
+    _arctic_rows_with_removals(monkeypatch)
+    got = list(arctic_shift.posts(Query(subreddit="test", query="voice", max=3)))
+    assert [p["id"] for p in got] == ["p100", "p101", "p102"]
+
+
+def test_other_sources_removed_items_are_filtered_too(monkeypatch):
+    removed = dict(fake_post(1, 1000), removed_by_category="moderator")
+    _sources(monkeypatch, arctic_shift=SourceError("HTTP 503"),
+             pullpush=[post_from_reddit_like(2, "test"), post_from_reddit(removed, "pullpush")])
+    res = core.scrape_posts(Query(subreddit="test"))
+    assert [p["id"] for p in res.items] == ["p2"]
+
+
+def test_insights_ignore_removed_posts():
+    from reddit_scraper import insights
+    now = 2_000_000_000
+    posts = [dict(fake_post(i, now - 5 * 86400), score=10 * i, status="removed by moderators") for i in range(12)]
+    assert "not enough scored posts" in insights.summarize(posts, now=now)[0]["line"]
+
+
+def test_csv_has_a_status_column(tmp_path):
+    from reddit_scraper.models import POST_FIELDS, post_from_reddit
+    path = export.write_csv([post_from_reddit(fake_post(1, 1000), "reddit_json")], POST_FIELDS, tmp_path / "x.csv")
+    header, row = path.read_text(encoding="utf-8-sig").splitlines()[:2]
+    assert header.endswith(",status") and row.endswith(",live")
+
+
+def test_cli_include_removed_flag(monkeypatch, tmp_path):
+    from reddit_scraper import cli
+    seen = []
+    monkeypatch.setattr(core, "search_posts", lambda q, *a, **k: seen.append(q) or core.Result())
+    with pytest.raises(SystemExit):
+        cli.main(["posts", "-s", "test", "--include-removed", "--out", str(tmp_path / "x.csv")])
+    assert seen[0].include_removed is True

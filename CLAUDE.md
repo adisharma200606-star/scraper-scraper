@@ -81,6 +81,14 @@ The only runtime dependency is `requests`.
     busier subreddits (e.g. r/voiceagent, 3 posts, vs r/voiceagents, 441). Note that browsing a
     subreddit that doesn't exist returns the same 422 "slow down" error, not an empty list.
   - Scores for posts younger than ~36 hours may still show 0 or 1.
+  - **Removed posts.** It saves each post seconds after posting, then checks it again a few days
+    later (`_meta.retrieved_2nd_on`, done for ~85% of posts by day 4-5) and records removals in
+    `removed_by_category` (`moderator`, `automod_filtered`, `reddit`, `content_takedown`, ...),
+    `_meta.removal_type` and `selftext: "[removed]"`. Samples on 16 Nov 2026: r/apple 78 of 100
+    removed (57 AutoModerator), r/politics 25-50, r/VoiceAgents 37. `models.visibility` turns this
+    into a `status` column; removed posts are left out by default (`--include-removed` keeps them)
+    and Arctic Shift keeps reading until it has `--max` live posts. Posts without the second check
+    show "not rechecked yet": they may still get removed. Insights ignore removed posts.
 - **PullPush** is often down (502/526). It's retried, then rested for 2 minutes.
   - On 16 Nov 2026 it answered 429: "This website does not provide free scraping resources for
     agents. Please contact the administrator on Discord if you're interested in a paid scraping
@@ -112,7 +120,10 @@ are given), `core.search_posts` / `core.search_comments`:
 
 Both RSS endpoints were tested from the Mac and work. A comma-separated list of subreddits runs the
 same per-subreddit loop. `rscrape subs "<keywords>"` only lists the subreddits it finds.
-In Claude Code you can also pick likely subreddits yourself and pass them as a list.
+In Claude Code, Claude picks the subreddits itself and passes them as a list (the skill says so),
+because the finder depends on reddit.com, which often refuses home/office connections. Once
+Reddit refuses one of its two search pages, `rss._search_refused_until` stops the other one from
+being asked (and waiting) for 10 minutes; normal RSS feeds are unaffected.
 
 ## "Your search" vs "scraper problem"
 

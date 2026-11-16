@@ -55,6 +55,9 @@ def add_filters(p):
                    help="with no subreddit: how many subreddits to find and search (default 5)")
     p.add_argument("--scan-max", type=positive_int, default=10000,
                    help="if a keyword search has to filter locally, check at most this many items (default 10000)")
+    p.add_argument("--include-removed", action="store_true",
+                   help="keep posts/comments that moderators, AutoModerator or Reddit removed "
+                        "(left out by default; the 'status' column says what happened)")
     p.add_argument("--out", help="file to save to (default: output/<time>_posts.csv). Use - to print JSON")
     p.add_argument("--format", default="csv", choices=["csv", "json", "both"])
 
@@ -64,6 +67,7 @@ def build_query(a, max_items):
         subreddit=a.subreddit, query=a.query, author=a.author,
         since=parse_when(a.since), until=parse_when(a.until, end_of_day=True),
         max=max_items, listing=getattr(a, "listing", "new"), scan_max=a.scan_max,
+        include_removed=a.include_removed,
     )
 
 
@@ -118,6 +122,7 @@ def cmd_posts(a):
         cres = core.scrape_post_comments(
             ids, a.comments_max, a.source, log=log,
             since=parse_when(a.comments_since), until=parse_when(a.comments_until, end_of_day=True),
+            include_removed=a.include_removed,
         )
         comments = cres.items
         sources += [s for s in cres.sources if s not in sources]
@@ -136,7 +141,7 @@ def cmd_comments(a):
                 log(f"skipping '{p}': not a Reddit post link or ID")
         if not ids:
             return 2
-        res = core.scrape_post_comments(ids, a.max, a.source, log=log)
+        res = core.scrape_post_comments(ids, a.max, a.source, log=log, include_removed=a.include_removed)
     else:
         if not (a.subreddit or a.author or a.query):
             log("give --post, or at least one of --subreddit / --author / --query")

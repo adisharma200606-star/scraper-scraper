@@ -26,9 +26,8 @@ rscrape comments -s SUB [-q KEYWORDS] [-a AUTHOR] [--since] [--until] [--max N]
 - Comment keyword search needs a subreddit or author too.
 - `--sort top` only sorts what was fetched, so raise `--max` (e.g. 1000+) to find the real top posts in a range.
 - Leave `--source` on auto unless the user asks for a specific one.
-- No subreddit given? Leave `-s` out: it finds the best subreddits itself (`--find N`, default 5).
-  Or pass several: `-s "AI_Agents, SaaS"`. If you know the topic well, choosing the subreddits
-  yourself usually beats auto-finding. `rscrape subs "keywords"` previews what it would pick.
+- **Always pass subreddits with `-s`. Choose them yourself; don't leave `-s` empty.** See
+  "Broad or ambiguous topics" below.
 - Keyword searches work best with a subreddit. Arctic Shift's own keyword search is usually
   refused now, so the scraper checks the subreddit's posts one by one and filters locally (up to
   `--scan-max`, default 10000 items checked, about 6 minutes). Add a date range to make that
@@ -37,6 +36,40 @@ rscrape comments -s SUB [-q KEYWORDS] [-a AUTHOR] [--since] [--until] [--max N]
   misspelled) and suggests similarly named, busier subreddits. Pass that on to the user.
 - Reddit's JSON pages are blocked on many networks; RSS usually still works for recent posts and
   comment threads (no scores).
+
+## Broad or ambiguous topics (the usual case)
+
+Leaving `-s` empty makes the scraper ask reddit.com where a topic is discussed, and Reddit
+often refuses requests from home and office connections (403/429 for 10-15 minutes). Naming
+subreddits skips Reddit entirely and goes through the Arctic Shift archive, which keeps working.
+So you are the subreddit finder:
+
+1. Pick 4-8 real, active subreddits covering the different angles of the request. For "what do
+   people think of Donald Trump": `politics, Conservative, PoliticalDiscussion, AskTrumpSupporters,
+   moderatepolitics, news`. For "voice AI agents": `VoiceAgents, AI_Agents, LocalLLaMA, SaaS`.
+   Mix big general subreddits with small focused ones; spell names exactly.
+2. Run them in one command: `rscrape posts -s "a, b, c" -q "keywords" --since 30d --max 200`.
+   `--max` is split between the subreddits.
+3. Keywords: every word must appear in a post for it to match, so use the fewest, most
+   distinctive words: `trump` finds far more than `donald trump` (people rarely write the full
+   name). Use `OR` for alternatives (`sarvam OR "sarvam ai"`). Common words in a big subreddit
+   match quickly; a rare word in a huge subreddit over a long range is slow (the archive checks
+   posts one by one, about 6 minutes per 10,000), so narrow `--since` for those.
+4. Read the verdict at the end (see "When it finds nothing"). If a subreddit comes back as
+   `YOUR SEARCH:` with "Did you mean r/X", rerun with r/X. If a whole run is `YOUR SEARCH:`,
+   broaden: more subreddits, a longer range, fewer or different keywords.
+
+Only use the automatic finder (`-s` left out, or `rscrape subs`) if the user asks for it.
+
+## Removed posts
+
+Posts that moderators, AutoModerator or Reddit removed are left out by default (the log says how
+many), so they never become examples. Every row has a `status`: "live", "not rechecked yet"
+(posted in the last few days, so it may still be removed), or why it's gone if kept.
+- When studying posts to learn what works or to write posts, only use "live" ones: add
+  `--until 5d` so every post has been rechecked.
+- `--include-removed` keeps them, marked. Use it only when the user wants to know what gets
+  removed (e.g. compare live vs removed posts to learn a subreddit's unwritten rules).
 
 ## Where the results go
 

@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 from statistics import median
 
+from .models import is_removed
+
 MIN_POSTS = 10          # fewer scored posts than this and we don't judge
 MIN_GROUP = 3           # a trait needs at least this many posts with it AND without it
 STRONG = 1.5            # at least 1.5x more (or less) likely to be a top post to count
@@ -50,6 +52,8 @@ def _scored(posts, now):
             continue  # RSS has no scores
         if not p.get("created_utc"):
             continue  # no posting time: can't judge its age or posting hour
+        if is_removed(p):
+            continue  # taken down: not an example of what works, whatever its score
         age = now - p["created_utc"]
         if p.get("source") in ("arctic_shift", "pullpush") and age < FRESH_SECONDS:
             continue  # archived at posting time; score not final yet
