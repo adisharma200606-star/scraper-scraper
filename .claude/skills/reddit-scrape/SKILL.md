@@ -29,9 +29,12 @@ rscrape comments -s SUB [-q KEYWORDS] [-a AUTHOR] [--since] [--until] [--max N]
 - No subreddit given? Leave `-s` out: it finds the best subreddits itself (`--find N`, default 5).
   Or pass several: `-s "AI_Agents, SaaS"`. If you know the topic well, choosing the subreddits
   yourself usually beats auto-finding. `rscrape subs "keywords"` previews what it would pick.
-- Keyword searches work best with a subreddit. If Arctic Shift's own keyword search times out, the
-  scraper scans the subreddit and filters locally (up to `--scan-max`, default 10000 items checked);
-  add a date range to make that faster.
+- Keyword searches work best with a subreddit. Arctic Shift's own keyword search is usually
+  refused now, so the scraper checks the subreddit's posts one by one and filters locally (up to
+  `--scan-max`, default 10000 items checked, about 6 minutes). Add a date range to make that
+  faster, and avoid rare keywords across huge subreddits over long ranges.
+- If a subreddit search finds nothing, the log says why (e.g. the subreddit is inactive or
+  misspelled) and suggests similarly named, busier subreddits. Pass that on to the user.
 - Reddit's JSON pages are blocked on many networks; RSS usually still works for recent posts and
   comment threads (no scores).
 
@@ -49,6 +52,18 @@ Every posts scrape ends with a one-line summary per subreddit (`what_works` in J
 post traits did best in that scrape. Use it when planning posts, but treat it as a hint from one
 sample. For a fair read, scrape a wide date range without keywords (e.g. `--since 90d --until 3d
 --max 1000`), since keyword filtering only shows posts on that topic.
+
+## When it finds nothing: whose fault is it?
+
+Every run ends with a verdict on stderr and an exit code. Tell the user which one it was:
+- exit 0: worked. `PARTLY DONE:` (also exit 0) means some subreddit or source couldn't be fully
+  searched, so there may be more; say so.
+- exit 1, `YOUR SEARCH:`: the sources worked and nothing matched. The lines under it say why
+  (misspelled or inactive subreddit, keyword nobody used in that range) and may suggest a better
+  subreddit. Fix the search (subreddit, dates, keywords) and retry. Don't blame the scraper.
+- exit 3, `SCRAPER PROBLEM:`: the sources failed, so "nothing" isn't a real answer. Wait a few
+  minutes and retry, or run `rscrape check`. Don't conclude the topic isn't discussed.
+- exit 2 / `check your input:`: something typed was invalid (subreddit name, date, number).
 
 ## When it fails
 

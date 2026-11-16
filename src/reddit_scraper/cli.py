@@ -29,6 +29,17 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def positive_int(text):
+    """For counts like --max: 0 or a negative number would quietly do nothing useful."""
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' isn't a whole number")
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return n
+
+
 def add_filters(p):
     p.add_argument("-s", "--subreddit",
                    help="subreddit, or several separated by commas. Leave out to find them automatically")
@@ -40,9 +51,9 @@ def add_filters(p):
                    help="where to scrape from (default: auto = try each until one works)")
     p.add_argument("--sort", default="new", choices=list(core.SORTS),
                    help="order of the saved results (default: new)")
-    p.add_argument("--find", type=int, default=5, metavar="N",
+    p.add_argument("--find", type=positive_int, default=5, metavar="N",
                    help="with no subreddit: how many subreddits to find and search (default 5)")
-    p.add_argument("--scan-max", type=int, default=10000,
+    p.add_argument("--scan-max", type=positive_int, default=10000,
                    help="if a keyword search has to filter locally, check at most this many items (default 10000)")
     p.add_argument("--out", help="file to save to (default: output/<time>_posts.csv). Use - to print JSON")
     p.add_argument("--format", default="csv", choices=["csv", "json", "both"])
@@ -56,10 +67,15 @@ def build_query(a, max_items):
     )
 
 
-def finish(posts, comments, a, sources, errors):
+def finish(posts, comments, a, sources, checks=()):
     posts = core.sort_items(posts, a.sort)
     comments = core.sort_items(comments, "top" if a.sort in ("top", "comments") else a.sort)
-    summary = insights.summarize(posts, keyword_filtered=bool(getattr(a, "query", None))) if posts else []
+    summary = []
+    if posts:
+        try:
+            summary = insights.summarize(posts, keyword_filtered=bool(getattr(a, "query", None)))
+        except Exception as e:  # a hint isn't worth losing the results over: still save them
+            log(f"(couldn't work out 'what works here': {e})")
     if a.out == "-":
         data = {"posts": export.nest(posts, comments)} if posts else {"comments": comments}
         if summary:
@@ -74,16 +90,28 @@ def finish(posts, comments, a, sources, errors):
             log("  " + s["line"])
     log(f"done: {len(posts)} posts, {len(comments)} comments"
         + (f" (from {', '.join(sources)})" if sources else ""))
-    if not posts and not comments:
-        log("nothing found." + (" problems: " + "; ".join(errors) if errors else ""))
-        return 1
-    return 0
+    return report(core.outcome(list(checks), len(posts) + len(comments)))
+
+
+# Exit codes, so scripts (and Claude Code) can tell the cases apart without reading the text.
+EXIT_CODES = {"ok": 0, "partial": 0, "your_search": 1, "scraper": 3}
+LABELS = {"ok": "", "partial": "PARTLY DONE: ", "your_search": "YOUR SEARCH: ", "scraper": "SCRAPER PROBLEM: "}
+
+
+def report(result):
+    """Say clearly whether an empty result is down to the search or to the scraper."""
+    if result["verdict"] != "ok" or result["details"]:
+        log("")
+        log(LABELS[result["verdict"]] + result["headline"])
+        for line in result["details"]:
+            log("  - " + line)
+    return EXIT_CODES[result["verdict"]]
 
 
 def cmd_posts(a):
     q = build_query(a, a.max)
     res = core.search_posts(q, a.source, log=log, find_n=a.find)
-    comments, sources, errors = [], list(res.sources), list(res.errors)
+    comments, sources, checks = [], list(res.sources), list(res.checks)
     if a.comments and res.items:
         top_n = None if a.comments == "all" else int(a.comments)
         ids = core.posts_to_hydrate(res.items, top_n)
@@ -93,20 +121,28 @@ def cmd_posts(a):
         )
         comments = cres.items
         sources += [s for s in cres.sources if s not in sources]
-        errors += cres.errors
-    return finish(res.items, comments, a, sources, errors)
+        checks += cres.checks
+    return finish(res.items, comments, a, sources, checks)
 
 
 def cmd_comments(a):
     if a.post:
-        ids = [post_id_from(p) for p in a.post]
-        res = core.scrape_post_comments([i for i in ids if i], a.max, a.source, log=log)
+        ids = []
+        for p in a.post:
+            pid = post_id_from(p)
+            if pid:
+                ids.append(pid)
+            else:
+                log(f"skipping '{p}': not a Reddit post link or ID")
+        if not ids:
+            return 2
+        res = core.scrape_post_comments(ids, a.max, a.source, log=log)
     else:
         if not (a.subreddit or a.author or a.query):
             log("give --post, or at least one of --subreddit / --author / --query")
             return 2
         res = core.search_comments(build_query(a, a.max), a.source, log=log, find_n=a.find)
-    return finish([], res.items, a, res.sources, res.errors)
+    return finish([], res.items, a, res.sources, res.checks)
 
 
 def cmd_subs(a):
@@ -140,7 +176,22 @@ def cmd_ui(a):
     return 0
 
 
+def _safe_output():
+    """Make printing never crash on unusual characters.
+
+    On Windows, output sent to a file or another program (like Claude Code) uses an old
+    text encoding that can't hold emojis, and some Reddit text has half an emoji in it.
+    UTF-8 with errors="replace" prints those as "?" instead of stopping with an error.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass  # not a normal text stream (rare); leave it as it is
+
+
 def main(argv=None):
+    _safe_output()
     p = argparse.ArgumentParser(
         prog="rscrape", description="Scrape Reddit posts and comments without logging in.",
         epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -150,12 +201,12 @@ def main(argv=None):
     pp = sub.add_parser("posts", help="scrape posts", epilog=EXAMPLES,
                         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_filters(pp)
-    pp.add_argument("--max", type=int, default=100, help="max posts (default 100)")
+    pp.add_argument("--max", type=positive_int, default=100, help="max posts (default 100)")
     pp.add_argument("--listing", default="new", choices=["new", "hot", "top", "rising"],
                     help="which Reddit listing the live sources read (default new)")
     pp.add_argument("--comments", metavar="N|all",
                     help="also fetch comments for the top N posts (by comment count), or 'all'")
-    pp.add_argument("--comments-max", type=int, default=500, help="max comments per post (default 500)")
+    pp.add_argument("--comments-max", type=positive_int, default=500, help="max comments per post (default 500)")
     pp.add_argument("--comments-since", help="only keep comments made on/after this date")
     pp.add_argument("--comments-until", help="only keep comments made on/before this date")
     pp.set_defaults(func=cmd_posts)
@@ -165,12 +216,12 @@ def main(argv=None):
     pc.add_argument("--post", action="append", metavar="ID_OR_URL",
                     help="get comments under this post (repeat for several posts)")
     add_filters(pc)
-    pc.add_argument("--max", type=int, default=500, help="max comments (per post when using --post)")
+    pc.add_argument("--max", type=positive_int, default=500, help="max comments (per post when using --post)")
     pc.set_defaults(func=cmd_comments)
 
     ps = sub.add_parser("subs", help="find subreddits for some keywords")
     ps.add_argument("keywords", help='e.g. "voice ai agent"')
-    ps.add_argument("-n", type=int, default=10, help="how many to show (default 10)")
+    ps.add_argument("-n", type=positive_int, default=10, help="how many to show (default 10)")
     ps.set_defaults(func=cmd_subs)
 
     pu = sub.add_parser("ui", help="open the web page")
@@ -184,13 +235,15 @@ def main(argv=None):
     a = p.parse_args(argv)
     if getattr(a, "comments", None) not in (None, "all"):
         try:
-            int(a.comments)
+            ok = int(a.comments) >= 1  # a negative number used to mean "all posts" by accident
         except ValueError:
-            p.error("--comments must be a number or 'all'")
+            ok = False
+        if not ok:
+            p.error("--comments must be a number (1 or more) or 'all'")
     try:
         sys.exit(a.func(a))
-    except ValueError as e:
-        p.error(str(e))
+    except ValueError as e:  # something typed in the search itself (a bad name, date or number)
+        p.error("check your input: " + str(e))
     except KeyboardInterrupt:
         log("stopped.")
         sys.exit(130)

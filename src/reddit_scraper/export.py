@@ -21,6 +21,17 @@ def _default_output_dir():
 OUTPUT_DIR = _default_output_dir()
 SHEETS_CELL_LIMIT = 49000  # Google Sheets rejects cells over 50,000 characters
 
+# Excel and Google Sheets run a cell as a FORMULA if it starts with one of these. Anyone can
+# post a Reddit title like =HYPERLINK(...) or =IMPORTXML(...), so we put a ' in front, which
+# makes the sheet show the text as plain text instead of running it.
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell(value):
+    if isinstance(value, str) and value.startswith(FORMULA_START):
+        return "'" + value
+    return value
+
 
 def default_path(kind, ext):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,12 +42,14 @@ def default_path(kind, ext):
 def write_csv(items, fields, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # utf-8-sig so Excel shows emojis and non-English text correctly
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+    # utf-8-sig so Excel shows emojis and non-English text correctly.
+    # errors="replace": some Reddit text has half an emoji in it, which can't be saved as-is;
+    # it becomes "?" instead of stopping the whole save.
+    with open(path, "w", newline="", encoding="utf-8-sig", errors="replace") as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         for item in items:
-            row = {k: item.get(k) for k in fields}
+            row = {k: _safe_cell(item.get(k)) for k in fields}
             for k, v in row.items():
                 if isinstance(v, str) and len(v) > SHEETS_CELL_LIMIT:
                     row[k] = v[:SHEETS_CELL_LIMIT] + " [truncated]"
@@ -55,7 +68,7 @@ def nest(posts, comments):
 def write_json(data, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8", errors="replace")
     return path
 
 
@@ -91,6 +104,6 @@ def save(posts=None, comments=None, out=None, fmt="csv", insights=None):
         if insights:
             target = (Path(out).with_name(Path(out).stem + "_what_works.txt") if out
                       else default_path("what_works", "txt"))
-            target.write_text("\n".join(s["line"] for s in insights) + "\n", encoding="utf-8")
+            target.write_text("\n".join(s["line"] for s in insights) + "\n", encoding="utf-8", errors="replace")
             files.append(target)
     return files

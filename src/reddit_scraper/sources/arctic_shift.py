@@ -31,6 +31,24 @@ def _walk(endpoint, params, max_items, log, patient=True):
     )
 
 
+def _scan(endpoint, q, match, convert, text_of, log):
+    """Page through everything in q's date range ourselves and keep what matches the keywords."""
+    scanned = found = 0
+    for row in _walk(endpoint, _filters(q), q.scan_max, log):
+        scanned += 1
+        if log and scanned % 1000 == 0:
+            log(f"  checked {scanned}, {found} matched so far")
+        if match(text_of(row)):
+            found += 1
+            yield convert(row, NAME)
+            if found >= q.max:
+                break
+    if log:
+        log(f"  checked {scanned}, {found} matched")
+        if scanned >= q.scan_max:
+            log(f"  stopped after checking {q.scan_max}. Narrow the dates or raise the scan limit for more")
+
+
 def _search(endpoint, keyword_param, q, convert, text_of, log):
     """Keyword search, with a plan B.
 
@@ -62,22 +80,7 @@ def _search(endpoint, keyword_param, q, convert, text_of, log):
         if log:
             log(f"  {NAME}'s keyword search is busy ({e}), so checking posts one by one instead "
                 "(slower, but works)")
-
-    match = keyword_matcher(q.query)
-    scanned = found = 0
-    for row in _walk(endpoint, params, q.scan_max, log):
-        scanned += 1
-        if log and scanned % 1000 == 0:
-            log(f"  checked {scanned}, {found} matched so far")
-        if match(text_of(row)):
-            found += 1
-            yield convert(row, NAME)
-            if found >= q.max:
-                break
-    if log:
-        log(f"  checked {scanned}, {found} matched")
-        if scanned >= q.scan_max:
-            log(f"  stopped after checking {q.scan_max}. Narrow the dates or raise the scan limit for more")
+    yield from _scan(endpoint, q, keyword_matcher(q.query), convert, text_of, log)
 
 
 def posts(q, log=None):
@@ -100,3 +103,39 @@ def comments_for_post(post_id, max_items, log=None):
 
 def ping():
     get_json(f"{BASE}/posts/search", {"subreddit": "AskReddit", "limit": 1}, retries=0, timeout=15)
+
+
+# ---------- explaining an empty result ----------
+# These only feed a helpful message, so they ask once and give up quickly instead of
+# waiting out Arctic Shift's "slow down" answers.
+QUICK = {"retries": 1, "timeout": 20, "retry_slowdowns": False}
+
+
+def subreddit_info(name):
+    """What the archive knows about a subreddit: {"name", "posts"}, or None if it has never heard of it."""
+    rows = (get_json(f"{BASE}/subreddits/search", {"subreddit": name}, **QUICK) or {}).get("data") or []
+    if not rows:
+        return None
+    return {"name": rows[0].get("display_name") or name,
+            "posts": (rows[0].get("_meta") or {}).get("num_posts") or 0}
+
+
+def newest_post_time(name):
+    """Time of the subreddit's newest archived post, or None if it has none."""
+    rows = (get_json(f"{BASE}/posts/search", {"subreddit": name, "limit": 1, "sort": "desc"}, **QUICK)
+            or {}).get("data") or []
+    return int(float(rows[0]["created_utc"])) if rows else None
+
+
+def similar_subreddits(name, limit=10):
+    """Subreddits whose names start like this one, busiest first: [(name, number of posts)].
+
+    The archive's subreddit search only matches the start of names, so we drop the last letter:
+    that catches plurals ("voiceagent" / "voiceagents") and a mistyped last letter ("voiceagentz").
+    """
+    prefix = name[:-1] if len(name) > 3 else name
+    rows = (get_json(f"{BASE}/subreddits/search", {"subreddit_prefix": prefix, "limit": limit}, **QUICK)
+            or {}).get("data") or []
+    found = [(r["display_name"], (r.get("_meta") or {}).get("num_posts") or 0)
+             for r in rows if r.get("display_name")]
+    return sorted(found, key=lambda x: -x[1])

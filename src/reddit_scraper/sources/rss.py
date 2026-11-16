@@ -54,6 +54,11 @@ def _entries(path, params, log, retries=3, can_block=True):
                 mark_blocked(NAME)
             raise SourceError(LIMITED_MSG.format(status=e.status), e.status)
         raise
+    # Reddit's feeds never contain a <!DOCTYPE> or <!ENTITY>. Those are how a booby-trapped XML
+    # file can make the parser use up all memory ("billion laughs"), and the XML parser in the
+    # Python that ships with macOS is old enough to fall for it. So we refuse them outright.
+    if b"<!DOCTYPE" in resp.content or b"<!ENTITY" in resp.content:
+        raise SourceError("RSS feed wasn't a normal Reddit feed (probably a block page)")
     try:
         root = ET.fromstring(resp.content)
     except ET.ParseError:

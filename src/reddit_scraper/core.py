@@ -7,9 +7,10 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 
 from .http import Unsupported
-from .models import Query, _clean
+from .models import Query, _clean, check_subreddit
 from .sources import SOURCES
 
 # The order sources are tried in when source="auto".
@@ -29,6 +30,9 @@ class Result:
     items: list = field(default_factory=list)
     sources: list = field(default_factory=list)   # sources that returned something
     errors: list = field(default_factory=list)    # what went wrong along the way
+    hints: list = field(default_factory=list)     # plain-English reasons a subreddit found nothing
+    completed: list = field(default_factory=list) # sources that finished searching without failing
+    checks: list = field(default_factory=list)    # one per search target, used by outcome()
 
 
 def _quiet(*_):
@@ -102,6 +106,8 @@ def _run(make_iter, order, source, max_items, log, on_item, q=None, res=None, se
             on_item(item)
             if len(res.items) - start >= max_items:
                 break
+        if not failed:
+            res.completed.append(name)  # it searched everything it was asked to, even if it found 0
         if got:
             res.sources.append(name)
             log(f"  {name}: got {got}")
@@ -158,16 +164,29 @@ def scrape_post_comments(post_ids, max_per_post=500, source="auto", log=None, on
         )
         log(f"  -> {len(res.items) - before} comments")
     res.sources = sorted(set(res.sources))
+    # Any source that finishes returns a post's whole thread, so "completed" means fully searched.
+    res.checks.append({
+        "label": f"comments for {len(post_ids)} post{'s' if len(post_ids) != 1 else ''}",
+        "searched": "full" if res.completed else "none", "found": len(res.items),
+        "hint": None, "yours": False, "errors": list(res.errors),
+    })
     return res
 
 
 # ---------- searching several subreddits, or finding them for you ----------
 
 def parse_subreddits(text):
-    """'AI_Agents, r/SaaS startups' -> ['AI_Agents', 'SaaS', 'startups']"""
+    """'AI_Agents, r/SaaS startups' -> ['AI_Agents', 'SaaS', 'startups']
+
+    A pasted link like https://www.reddit.com/r/SaaS/ works too. Anything that isn't a
+    valid subreddit name stops with a clear message (see models.check_subreddit).
+    """
     out = []
     for part in re.split(r"[,\s]+", text or ""):
-        name = _clean(part, ("r/", "/r/"))
+        link = re.search(r"reddit\.com/r/([^/?#]+)", part, re.I)
+        name = link.group(1) if link else _clean(part, ("r/", "/r/"))
+        if name:
+            check_subreddit(name)
         if name and name.lower() not in (o.lower() for o in out):
             out.append(name)
     return out
@@ -216,9 +235,14 @@ def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, i
     on_item = on_item or _quiet
     subs = parse_subreddits(q.subreddit)
     if len(subs) == 1:
-        return single(replace(q, subreddit=subs[0]), source, log, on_item)
+        one = replace(q, subreddit=subs[0])
+        res = single(one, source, log, on_item)
+        _record_check(res, one, source, res, log)
+        return res
     if not subs and (not q.query or q.author):
-        return single(q, source, log, on_item)  # no keywords to go on, or an author narrows it already
+        res = single(q, source, log, on_item)  # no keywords to go on, or an author narrows it already
+        _record_check(res, q, source, res, log)
+        return res
 
     combined, seen = Result(), set()
 
@@ -244,6 +268,12 @@ def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, i
             log("Couldn't find subreddits automatically (finding them needs Reddit itself). "
                 "Type one or more subreddits in and try again; that works through Arctic Shift.")
             combined.errors.append("no subreddits found")
+            combined.checks.append({
+                "label": "finding subreddits", "searched": "none", "found": len(combined.items),
+                "hint": "Finding subreddits automatically needs Reddit itself, which isn't answering "
+                        "on this network right now. Type one or more subreddits in instead.",
+                "yours": False, "errors": [],
+            })
             return combined
         log("Searching: " + ", ".join(f"r/{s}" for s in subs))
         if on_subreddits:
@@ -256,7 +286,122 @@ def _across_subreddits(single, q, source, log, on_item, find_n, on_subreddits, i
         res = single(replace(q, subreddit=name, max=per_sub), source, log, take)
         combined.sources += [s for s in res.sources if s not in combined.sources]
         combined.errors += [f"r/{name}: {e}" for e in res.errors]
+        _record_check(res, replace(q, subreddit=name), source, combined, log)
     return combined
+
+
+# ---------- explaining an empty result ----------
+
+def _day(ts):
+    d = datetime.fromtimestamp(ts, timezone.utc)
+    return f"{d.day} {d:%b %Y}"
+
+
+# Archives cover any date range. Reddit's live pages (JSON, RSS) only reach the newest posts.
+ARCHIVES = ("arctic_shift", "pullpush")
+LIVE_ONLY = ("reddit_json", "rss")
+
+
+def _coverage(res):
+    """How thoroughly a search was really done: "full", "recent" (newest posts only) or "none"."""
+    if any(name in ARCHIVES for name in res.completed):
+        return "full"
+    return "recent" if res.completed else "none"
+
+
+def explain_empty(name, q, searched="full"):
+    """Say in plain English why searching r/<name> found nothing.
+
+    Returns (text, yours): yours=True when the cause is in the search itself (a misspelled or
+    quiet subreddit, keywords nothing mentions), not a scraper problem. (None, False) if we can't tell.
+
+    Asks the Arctic Shift archive what it knows about the subreddit (a couple of quick
+    requests, never to reddit.com) and suggests similarly named, busier subreddits.
+    This matters because Arctic Shift answers a misspelled subreddit with the same
+    "slow down" error as when it's busy, which would otherwise look like a scraper failure.
+    """
+    archive = SOURCES["arctic_shift"]
+    try:
+        info = archive.subreddit_info(name)
+        similar = archive.similar_subreddits(name)
+    except Exception:
+        return None, False  # archive unreachable: the error messages already say what failed
+    own_posts = info["posts"] if info else 0
+    busier = [(n, c) for n, c in similar if n.lower() != name.lower() and c > max(own_posts, 10)][:3]
+    tip = (" Did you mean " + " or ".join(f"r/{n} ({c:,} posts)" for n, c in busier) + "?") if busier else ""
+
+    if info is None:
+        return f"r/{name} isn't in the archive, so it probably doesn't exist. Check the spelling.{tip}", True
+    try:
+        newest = archive.newest_post_time(name)
+    except Exception:  # the archive is busy right now; still pass on any suggestion
+        return (f"Couldn't check how active r/{name} is right now.{tip}" if tip else None), False
+    if newest is None:
+        return f"r/{name} has no posts at all.{tip}", True
+    if q.since is not None and newest < q.since:
+        return (f"r/{name} hasn't had a new post since {_day(newest)}, before your start date, "
+                f"so it's quiet or inactive ({info['posts']:,} posts ever). Try a longer date range.{tip}"), True
+    if q.query and searched == "full":
+        return (f"r/{name} is active, but nothing in this date range mentions {q.query}. "
+                f"Try a longer date range, broader keywords or another subreddit.{tip}"), True
+    return None, False
+
+
+def _record_check(res, q, source, into, log):
+    """Note how one search target went, so outcome() can say whose fault an empty result is."""
+    searched = _coverage(res)
+    hint, yours = None, False
+    if not res.items and q.subreddit:
+        hint, yours = explain_empty(q.subreddit, q, searched)
+    if searched == "recent" and source in LIVE_ONLY and not res.items:
+        # The user picked a live-only source on purpose: that's a search choice, not a failure.
+        hint = hint or (f"You picked {source}, which only reaches the newest posts. "
+                        "Use Auto or Arctic Shift to search further back.")
+        yours = True
+    if hint:
+        into.hints.append(hint)
+        log("Why nothing was found: " + hint)
+    into.checks.append({
+        "label": f"r/{q.subreddit}" if q.subreddit else (f"u/{q.author}" if q.author else "your search"),
+        "searched": searched, "found": len(res.items), "hint": hint, "yours": yours,
+        "errors": list(res.errors),
+    })
+
+
+def outcome(checks, found):
+    """Sort a finished run into one plain-English verdict.
+
+    "ok"          found results, everything was searched
+    "partial"     found results, but some part couldn't be searched (there may be more)
+    "your_search" nothing found, and the scraper worked: change the keywords, subreddit or dates
+    "scraper"     nothing found because sources failed: not your search, try again later
+    Returns {"verdict", "headline", "details": [...]}.
+    """
+    broken = [c for c in checks if c["searched"] != "full" and not c["yours"]]
+    details = [c["hint"] for c in checks if c["hint"]]
+    reasons = []
+    for c in broken:
+        if c["searched"] == "recent":
+            reasons.append(f"{c['label']}: the archives failed, so only Reddit's newest posts were checked")
+        for e in c["errors"][:3]:
+            reasons.append(f"{c['label']}: {e}")
+    fix = ("What to do: wait a few minutes and run it again, or click Check sources. "
+           "If it keeps failing, try another network (offices and VPNs often block Reddit).")
+    labels = ", ".join(c["label"] for c in broken)
+
+    if found and not broken:
+        return {"verdict": "ok", "headline": f"Done: found {found}.", "details": details}
+    if found:
+        return {"verdict": "partial",
+                "headline": f"Found {found}, but the scraper couldn't fully search {labels}. There may be more.",
+                "details": details + reasons + [fix]}
+    if broken:
+        return {"verdict": "scraper",
+                "headline": "Scraper problem, not your search: the sources failed, so this isn't a real \"no results\".",
+                "details": details + reasons + [fix]}
+    return {"verdict": "your_search",
+            "headline": "Nothing found, and the scraper worked fine: it's the search itself (see why below).",
+            "details": details or ["Try broader or fewer keywords, a longer date range, or another subreddit."]}
 
 
 def search_posts(q, source="auto", log=None, on_item=None, find_n=5, on_subreddits=None):

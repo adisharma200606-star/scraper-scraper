@@ -65,14 +65,29 @@ The only runtime dependency is `requests`.
   - Plain browsing (subreddit + date range, no keywords) is fast and reliable.
   - Its keyword search (`query`, `title`, `selftext`) is **unreliable**: it often returns
     `HTTP 422 "Timeout. Maybe slow down a bit"` within a second, depending on how busy their
-    server is. This is on their side and retrying doesn't help. So when keyword search fails,
-    the code browses the subreddit and filters locally (`models.keyword_matcher`, capped by
-    `--scan-max`). That "scanning and filtering locally" log line is expected, not an error.
+    server is. This is on their side and retrying doesn't help. On 16 Nov 2026 it refused
+    *every* keyword search, even a 30-day window on a tiny subreddit, so splitting the date
+    range doesn't help either. Pages are capped at 100 items (`limit=auto` gives 100 too, and
+    `fields=` gets refused), so checking posts one by one tops out around 30 posts a second.
+  - So when keyword search fails, the code browses the subreddit and filters locally
+    (`models.keyword_matcher`, capped by `--scan-max`). That "checking posts one by one" log
+    line is expected, not an error. It's slow for rare keywords in huge subreddits over long
+    ranges (10,000 posts take about 6 minutes), so narrow the dates for those.
   - Keyword search **requires a subreddit or author**. Searching all of Reddit by keyword is
     refused by design.
   - Its subreddit search only matches name prefixes, so it's useless for finding subreddits by topic.
+    It is used to explain empty results (`core.explain_empty`): `subreddits/search?subreddit=X`
+    returns `[]` for a subreddit it has never seen, and `subreddit_prefix=` finds similarly named,
+    busier subreddits (e.g. r/voiceagent, 3 posts, vs r/voiceagents, 441). Note that browsing a
+    subreddit that doesn't exist returns the same 422 "slow down" error, not an empty list.
   - Scores for posts younger than ~36 hours may still show 0 or 1.
 - **PullPush** is often down (502/526). It's retried, then rested for 2 minutes.
+  - On 16 Nov 2026 it answered 429: "This website does not provide free scraping resources for
+    agents. Please contact the administrator on Discord if you're interested in a paid scraping
+    service." So don't build features that lean on it. Requests to it are spaced 4 seconds
+    apart and a 429 is retried only once.
+  - When it did answer, its archive was about a month behind (newest post 13 Oct), and its
+    keyword search treated `OR` as an ordinary word.
 - **Reddit JSON** (`www.reddit.com/....json`) is blocked (403) on many networks, including the
   home network this was built on, whatever user agent is used. After the first 403 it's skipped
   for 10 minutes.
@@ -98,6 +113,17 @@ are given), `core.search_posts` / `core.search_comments`:
 Both RSS endpoints were tested from the Mac and work. A comma-separated list of subreddits runs the
 same per-subreddit loop. `rscrape subs "<keywords>"` only lists the subreddits it finds.
 In Claude Code you can also pick likely subreddits yourself and pass them as a list.
+
+## "Your search" vs "scraper problem"
+
+Every run ends with one verdict (`core.outcome`), so the user knows whether to change the search
+or wait and retry. Each search target (a subreddit, an author, a batch of post links) records a
+check in `Result.checks`: how far it was really searched ("full" if an archive finished, "recent"
+if only Reddit's live JSON/RSS did, "none" if everything failed) plus an explanation from
+`core.explain_empty`. Verdicts: `ok`, `partial`, `your_search` (exit 1), `scraper` (exit 3).
+A typed-in mistake (ValueError) is exit 2 / `"yours": true` on the page.
+Arctic Shift answers a misspelled subreddit with the same 422 as when it's busy, so a failed
+search on a subreddit the archive has never heard of counts as `your_search`, not `scraper`.
 
 ## What works here (insights.py)
 

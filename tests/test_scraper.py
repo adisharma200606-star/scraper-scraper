@@ -11,6 +11,11 @@ from reddit_scraper.http import SourceError
 from reddit_scraper.models import Query, parse_when, post_id_from
 from reddit_scraper.sources import arctic_shift, pullpush, reddit_json, rss
 
+# The real versions, kept before the autouse fixture below swaps them for offline fakes.
+REAL_SUBREDDIT_INFO = arctic_shift.subreddit_info
+REAL_SIMILAR_SUBREDDITS = arctic_shift.similar_subreddits
+REAL_NEWEST_POST_TIME = arctic_shift.newest_post_time
+
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
@@ -19,6 +24,14 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
     http._blocked_until.clear()
     core._down_until.clear()
+    # The empty-result explainer makes its own requests. By default pretend the archive's
+    # subreddit lookup can't be reached; tests that need it fake it.
+
+    def unreachable(*a, **k):
+        raise SourceError("not reachable in tests")
+    monkeypatch.setattr(arctic_shift, "subreddit_info", unreachable)
+    monkeypatch.setattr(arctic_shift, "similar_subreddits", unreachable)
+    monkeypatch.setattr(arctic_shift, "newest_post_time", unreachable)
 
 
 def fake_post(i, ts, sub="test"):
@@ -484,3 +497,298 @@ def test_failed_reddit_search_does_not_switch_off_rss(monkeypatch):
         list(rss.search_all(Query(query="macbook pro")))
     from reddit_scraper import http
     assert not http.is_blocked("rss")
+
+
+# ---------- security and robustness ----------
+
+def test_csv_cells_cannot_run_as_formulas(tmp_path):
+    posts = [dict(fake_post(1, 100), title='=HYPERLINK("http://evil","click")', selftext="@SUM(1)",
+                  author="+bob", score=-5)]
+    export.save(posts, [], out=tmp_path / "run.csv")
+    text = (tmp_path / "run.csv").read_text(encoding="utf-8-sig")
+    assert "'=HYPERLINK" in text and "'@SUM" in text and "'+bob" in text
+    assert ",-5," in text  # real numbers are left alone
+
+
+def test_export_survives_broken_emoji(tmp_path):
+    broken = json.loads('"half an emoji \\ud83d here"')  # Reddit text sometimes has these
+    posts = [dict(fake_post(1, 100), title=broken)]
+    files = export.save(posts, [], out=tmp_path / "run.csv", fmt="both")
+    assert len(files) == 2
+    assert "half an emoji ? here" in (tmp_path / "run.csv").read_text(encoding="utf-8-sig")
+
+
+def test_names_and_post_ids_are_checked():
+    assert post_id_from("hello world") is None
+    assert post_id_from("../../x?y=1") is None
+    with pytest.raises(ValueError, match="isn't a Reddit username"):
+        Query(author="bad/name?x")
+    with pytest.raises(ValueError, match="isn't a subreddit name"):
+        core.parse_subreddits("python, ../../api")
+    assert core.parse_subreddits("https://www.reddit.com/r/SaaS/, r/python") == ["SaaS", "python"]
+
+
+def test_parse_when_far_past_is_a_clear_error():
+    with pytest.raises(ValueError, match="too far back"):
+        parse_when("99999999d")
+
+
+def test_rss_refuses_xml_with_entities(monkeypatch):
+    bomb = b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><feed>&a;</feed>'
+
+    class Resp:
+        content = bomb
+
+    monkeypatch.setattr(rss, "get", lambda url, params=None, **kw: Resp())
+    with pytest.raises(SourceError, match="normal Reddit feed"):
+        list(rss.posts(Query(subreddit="test", max=10)))
+
+
+def test_insights_cope_with_missing_dates():
+    from reddit_scraper import insights
+    posts = [dict(fake_post(i, 1700000000 + i * 3600), source="reddit_json") for i in range(20)]
+    posts[0]["created_utc"] = None
+    insights.summarize(posts, now=1800000000)  # used to crash
+
+
+def test_cli_rejects_counts_below_one(capsys):
+    from reddit_scraper import cli
+    for args in (["posts", "-s", "x", "--max", "0"], ["posts", "-s", "x", "--comments", "-3"]):
+        with pytest.raises(SystemExit) as e:
+            cli.main(args)
+        assert e.value.code == 2
+
+
+@pytest.fixture
+def web():
+    """Start the real web server on a free local port; give back a request helper."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from reddit_scraper.web import server
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    def request(method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        h = {"Host": f"127.0.0.1:{port}"}
+        h.update(headers or {})
+        conn.request(method, path, body=body, headers=h)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return resp, data
+
+    request.port = port
+    yield request
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_web_page_loads_and_cannot_be_framed(web):
+    resp, data = web("GET", "/")
+    assert resp.status == 200 and b"Reddit Scraper" in data
+    assert resp.getheader("X-Frame-Options") == "DENY"
+    assert web("GET", "/../../etc/passwd")[0].status == 404
+
+
+def test_web_refuses_other_websites(web):
+    job = json.dumps({"mode": "comments"})  # fails instantly, no network needed
+    json_ct = {"Content-Type": "application/json"}
+    assert web("GET", "/", headers={"Host": "evil.example"})[0].status == 403   # DNS rebinding
+    assert web("POST", "/api/run", job, dict(json_ct, Origin="https://evil.example"))[0].status == 403
+    assert web("POST", "/api/run", job, dict(json_ct, **{"Sec-Fetch-Site": "cross-site"}))[0].status == 403
+    assert web("GET", "/api/check", headers={"Sec-Fetch-Site": "cross-site"})[0].status == 403
+    assert web("POST", "/api/run", job, {"Content-Type": "text/plain"})[0].status == 415
+
+    ok = dict(json_ct, Origin=f"http://localhost:{web.port}", **{"Sec-Fetch-Site": "same-origin"})
+    resp, data = web("POST", "/api/run", job, ok)
+    assert resp.status == 200
+    assert json.loads(data.splitlines()[0])["type"] == "error"
+
+
+def test_web_checks_the_request_body(web):
+    json_ct = {"Content-Type": "application/json"}
+    assert web("POST", "/api/run", "[1]", json_ct)[0].status == 400
+    assert web("POST", "/api/run", "{oops", json_ct)[0].status == 400
+    # Declared sizes that are too big, or negative (which used to hang the server).
+    assert web("POST", "/api/run", "{}", dict(json_ct, **{"Content-Length": "200000"}))[0].status == 413
+    assert web("POST", "/api/run", "{}", dict(json_ct, **{"Content-Length": "-1"}))[0].status == 413
+
+
+# ---------- explaining an empty result ----------
+
+def _subreddit_fakes(monkeypatch, info, similar=(), newest=None):
+    monkeypatch.setattr(arctic_shift, "subreddit_info", lambda name: info)
+    monkeypatch.setattr(arctic_shift, "similar_subreddits", lambda name: list(similar))
+    monkeypatch.setattr(arctic_shift, "newest_post_time", lambda name: newest)
+
+
+def test_explain_quiet_subreddit_and_suggest_busier_one(monkeypatch):
+    _subreddit_fakes(monkeypatch, {"name": "voiceagent", "posts": 3},
+                     [("voiceagents", 441), ("VoiceAgentsAI", 3), ("voiceagent", 3)], newest=1_752_000_000)
+    hint, yours = core.explain_empty("voiceagent", Query(query="sarvam", since=1_762_000_000))
+    assert yours and "hasn't had a new post since" in hint
+    assert "r/voiceagents (441 posts)" in hint and "VoiceAgentsAI" not in hint
+
+
+def test_explain_unknown_subreddit(monkeypatch):
+    _subreddit_fakes(monkeypatch, None, [("startups", 282287)])
+    hint, yours = core.explain_empty("startupz", Query())
+    assert yours and "isn't in the archive" in hint and "r/startups" in hint
+
+
+def test_explain_active_subreddit_without_matches(monkeypatch):
+    _subreddit_fakes(monkeypatch, {"name": "VoiceAgents", "posts": 441}, newest=2_000_000_000)
+    hint, yours = core.explain_empty("VoiceAgents", Query(query="sarvam", since=1_762_000_000))
+    assert yours and "nothing in this date range mentions sarvam" in hint
+    # if the archives couldn't search it, "nothing mentions it" might not be true, so say nothing
+    assert core.explain_empty("VoiceAgents", Query(query="sarvam"), searched="none") == (None, False)
+
+
+def test_explain_says_nothing_when_archive_unreachable():
+    assert core.explain_empty("voiceagent", Query()) == (None, False)  # autouse fake: unreachable
+
+
+def test_explain_still_suggests_when_activity_check_is_busy(monkeypatch):
+    _subreddit_fakes(monkeypatch, {"name": "voiceagent", "posts": 3}, [("voiceagents", 441)])
+
+    def busy(name):
+        raise SourceError("HTTP 422")
+    monkeypatch.setattr(arctic_shift, "newest_post_time", busy)
+    hint, yours = core.explain_empty("voiceagent", Query(query="sarvam"))
+    assert not yours and "Couldn't check" in hint and "r/voiceagents (441 posts)" in hint
+
+
+def test_empty_search_reports_why(monkeypatch):
+    _subreddit_fakes(monkeypatch, None)
+    monkeypatch.setattr(arctic_shift, "posts", lambda q, log=None: iter(()))
+    logs = []
+    res = core.search_posts(Query(subreddit="r/nopeznope"), source="arctic_shift", log=logs.append)
+    assert res.items == [] and "isn't in the archive" in res.hints[0]
+    assert any(m.startswith("Why nothing was found") for m in logs)
+
+
+def test_arctic_subreddit_lookups_parse_the_archive(monkeypatch):
+    asked = []
+
+    def fake_get_json(url, params=None, **kw):
+        asked.append(dict(params))
+        if url.endswith("subreddits/search") and "subreddit" in params:
+            return {"data": [{"display_name": "voiceagent", "_meta": {"num_posts": 3}}]}
+        if url.endswith("subreddits/search"):
+            return {"data": [{"display_name": "voiceagent", "_meta": {"num_posts": 3}},
+                             {"display_name": "voiceagents", "_meta": {"num_posts": 441}}]}
+        return {"data": [{"created_utc": 1752000000.0}]}
+    monkeypatch.setattr(arctic_shift, "get_json", fake_get_json)
+    assert REAL_SUBREDDIT_INFO("voiceagent") == {"name": "voiceagent", "posts": 3}
+    assert REAL_NEWEST_POST_TIME("voiceagent") == 1752000000
+    assert REAL_SIMILAR_SUBREDDITS("voiceagents") == [("voiceagents", 441), ("voiceagent", 3)]
+    assert asked[-1]["subreddit_prefix"] == "voiceagent"  # last letter dropped to catch both
+
+
+# ---------- "your search" vs "scraper problem" ----------
+
+def _sources(monkeypatch, **behaviour):
+    """behaviour: source name -> list of posts to return, or an Exception to raise."""
+    from reddit_scraper import sources as srcmod
+    for name, mod in srcmod.SOURCES.items():
+        b = behaviour.get(name, SourceError(f"HTTP 503 from {name}"))
+
+        def posts(q, log=None, b=b):
+            if isinstance(b, Exception):
+                raise b
+            yield from b
+        monkeypatch.setattr(mod, "posts", posts)
+
+
+def test_verdict_your_search_when_sources_worked_but_nothing_matched(monkeypatch):
+    _sources(monkeypatch, arctic_shift=[])
+    _subreddit_fakes(monkeypatch, {"name": "VoiceAgents", "posts": 441}, newest=2_000_000_000)
+    res = core.search_posts(Query(subreddit="VoiceAgents", query="sarvam"))
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "your_search" and "mentions sarvam" in o["details"][0]
+
+
+def test_verdict_scraper_problem_when_every_source_failed(monkeypatch):
+    _sources(monkeypatch)  # all fail; archive lookup unreachable too (autouse fake)
+    res = core.search_posts(Query(subreddit="VoiceAgents", query="sarvam"))
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "scraper" and "not your search" in o["headline"]
+    assert any("HTTP 503" in d for d in o["details"])
+
+
+def test_verdict_blames_a_typo_not_the_scraper(monkeypatch):
+    # Arctic Shift answers a misspelled subreddit with an error, which looks like a failure.
+    _sources(monkeypatch, arctic_shift=SourceError("HTTP 422: Timeout. Maybe slow down a bit", 422))
+    _subreddit_fakes(monkeypatch, None, [("VoiceAgents", 441)])
+    res = core.search_posts(Query(subreddit="VoiceAgentz", query="sarvam"))
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "your_search" and "doesn't exist" in o["details"][0]
+
+
+def test_verdict_only_newest_posts_checked_is_not_a_real_no(monkeypatch):
+    _sources(monkeypatch, rss=[])  # archives and JSON fail, RSS answers with nothing
+    _subreddit_fakes(monkeypatch, {"name": "VoiceAgents", "posts": 441}, newest=2_000_000_000)
+    res = core.search_posts(Query(subreddit="VoiceAgents", query="sarvam"))
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "scraper" and any("only Reddit's newest posts" in d for d in o["details"])
+
+
+def test_verdict_picking_rss_yourself_is_a_search_choice(monkeypatch):
+    _sources(monkeypatch, rss=[])
+    _subreddit_fakes(monkeypatch, {"name": "VoiceAgents", "posts": 441}, newest=2_000_000_000)
+    res = core.search_posts(Query(subreddit="VoiceAgents", query="sarvam"), source="rss")
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "your_search" and "only reaches the newest posts" in o["details"][0]
+
+
+def test_verdict_partial_when_one_subreddit_failed(monkeypatch):
+    def posts(q, log=None):
+        if q.subreddit == "good":
+            yield post_from_reddit_like(1, "good")
+        else:
+            raise SourceError("HTTP 503")
+    from reddit_scraper import sources as srcmod
+    for mod in srcmod.SOURCES.values():
+        monkeypatch.setattr(mod, "posts", posts)
+    res = core.search_posts(Query(subreddit="good, bad", query="x"))
+    o = core.outcome(res.checks, len(res.items))
+    assert o["verdict"] == "partial" and "r/bad" in o["headline"]
+
+
+def post_from_reddit_like(i, sub):
+    from reddit_scraper.models import post_from_reddit
+    return post_from_reddit(dict(fake_post(i, 1_700_000_000, sub=sub), title="x"), "arctic_shift")
+
+
+def test_cli_exit_codes_tell_search_and_scraper_apart(monkeypatch, capsys, tmp_path):
+    from reddit_scraper import cli
+    _subreddit_fakes(monkeypatch, {"name": "VoiceAgents", "posts": 441}, newest=2_000_000_000)
+    _sources(monkeypatch, arctic_shift=[])
+    with pytest.raises(SystemExit) as e:
+        cli.main(["posts", "-s", "VoiceAgents", "-q", "sarvam", "--out", str(tmp_path / "a.csv")])
+    assert e.value.code == 1 and "YOUR SEARCH:" in capsys.readouterr().err
+    _sources(monkeypatch)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["posts", "-s", "VoiceAgents", "-q", "sarvam", "--out", str(tmp_path / "b.csv")])
+    assert e.value.code == 3 and "SCRAPER PROBLEM:" in capsys.readouterr().err
+
+
+def test_web_job_reports_the_verdict_and_input_mistakes(monkeypatch):
+    from reddit_scraper.web import server
+    _sources(monkeypatch)
+    events = []
+    server.run_job({"subreddit": "VoiceAgents", "query": "sarvam"}, events.append)
+    assert events[-1]["type"] == "done" and events[-1]["outcome"]["verdict"] == "scraper"
+    with pytest.raises(ValueError):  # the web handler turns this into {"type": "error", "yours": True}
+        server.run_job({"subreddit": "not a/name"}, events.append)
+
+
+def test_web_labels_input_mistakes_as_yours(web):
+    ct = {"Content-Type": "application/json"}
+    _, data = web("POST", "/api/run", json.dumps({"subreddit": "not a/name"}), ct)
+    ev = json.loads(data.splitlines()[0])
+    assert ev["type"] == "error" and ev["yours"] is True and "subreddit name" in ev["msg"]

@@ -1,4 +1,5 @@
 """One place for every network request: timeouts, retries and rate-limit waits."""
+import threading
 import time
 import warnings
 
@@ -16,18 +17,25 @@ MAX_WAIT = 60  # never sleep longer than this on a single retry
 # Minimum gap between requests to the same site. Reddit only allows a few requests a minute
 # without a login, and going over gets your connection refused (429/403) for 10+ minutes.
 # Every Reddit source shares this, so together they stay under the limit.
-MIN_GAP_SECONDS = {"www.reddit.com": 6.0, "old.reddit.com": 6.0}
+# PullPush also refuses quick bursts (HTTP 429) and says it doesn't offer free scraping to
+# automated tools, so we ask it slowly too, and stop quickly when it says no.
+MIN_GAP_SECONDS = {"www.reddit.com": 6.0, "old.reddit.com": 6.0, "api.pullpush.io": 4.0}
 _last_request_at = {}
+# The web page can run two things at once (a scrape and "Check sources", or two tabs).
+# The lock makes them queue up, so they don't both fire at Reddit at the same moment.
+_pace_lock = threading.Lock()
 
 
 def _pace(url):
     host = _host(url)
     gap = MIN_GAP_SECONDS.get(host)
-    if gap:
+    if not gap:
+        return
+    with _pace_lock:
         wait = _last_request_at.get(host, 0) + gap - time.time()
         if wait > 0:
             time.sleep(wait)
-    _last_request_at[host] = time.time()
+        _last_request_at[host] = time.time()
 
 
 class SourceError(Exception):
@@ -107,7 +115,7 @@ def get(url, params=None, *, retries=3, timeout=30, log=None, retry_slowdowns=Tr
             last_status = resp.status_code
             if _should_retry(resp, retry_slowdowns):
                 last_problem = f"HTTP {resp.status_code}"
-                # Reddit: hammering it while it's limiting you only extends the penalty.
+                # Reddit/PullPush: hammering them while they're limiting you only extends the penalty.
                 give_up = resp.status_code == 429 and _host(url) in MIN_GAP_SECONDS and attempt >= 1
                 if attempt < retries and not give_up:
                     wait = _wait_seconds(resp, delay)

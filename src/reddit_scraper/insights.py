@@ -48,7 +48,9 @@ def _scored(posts, now):
     for p in posts:
         if p.get("score") is None:
             continue  # RSS has no scores
-        age = now - (p.get("created_utc") or now)
+        if not p.get("created_utc"):
+            continue  # no posting time: can't judge its age or posting hour
+        age = now - p["created_utc"]
         if p.get("source") in ("arctic_shift", "pullpush") and age < FRESH_SECONDS:
             continue  # archived at posting time; score not final yet
         out.append(p)

@@ -31,6 +31,9 @@ class Query:
         self.subreddit = _clean(self.subreddit, ("r/", "/r/"))
         self.author = _clean(self.author, ("u/", "/u/"))
         self.query = (self.query or "").strip() or None
+        if self.author and not USERNAME.fullmatch(self.author):
+            raise ValueError(f"'{self.author}' isn't a Reddit username "
+                             "(only letters, numbers, - and _).")
 
 
 def _clean(value, prefixes):
@@ -39,6 +42,20 @@ def _clean(value, prefixes):
         if value.lower().startswith(p):
             value = value[len(p):]
     return value.strip("/") or None
+
+
+# What Reddit allows in names. Names go into web addresses, so anything else (spaces, / ? # ..)
+# would quietly ask Reddit for the wrong page; we stop with a clear message instead.
+SUBREDDIT_NAME = re.compile(r"[A-Za-z0-9_]{1,50}")
+USERNAME = re.compile(r"[A-Za-z0-9_-]{1,50}")
+POST_ID = re.compile(r"[a-z0-9]{1,15}")
+
+
+def check_subreddit(name):
+    if not SUBREDDIT_NAME.fullmatch(name or ""):
+        raise ValueError(f"'{name}' isn't a subreddit name (only letters, numbers and _). "
+                         "Separate several with commas.")
+    return name
 
 
 # ---------- keywords ----------
@@ -95,8 +112,11 @@ def parse_when(text, end_of_day=False):
     m = re.fullmatch(r"(\d+)\s*([hdw])", text)
     if m:
         n, unit = int(m.group(1)), m.group(2)
-        delta = {"h": timedelta(hours=n), "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
-        return int((datetime.now(timezone.utc) - delta).timestamp())
+        try:
+            delta = {"h": timedelta(hours=n), "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
+            return int((datetime.now(timezone.utc) - delta).timestamp())
+        except OverflowError:  # e.g. 99999999d: further back than any calendar goes
+            raise ValueError(f"'{text}' is too far back. Reddit started in 2005.")
     if text.isdigit() and len(text) >= 9:
         return int(text)
     try:
@@ -123,14 +143,18 @@ def to_int(value):
 
 
 def post_id_from(text):
-    """Accept a post ID, 't3_' ID or full Reddit URL and return the bare ID."""
+    """Accept a post ID, 't3_' ID or full Reddit URL and return the bare ID.
+
+    Returns None if it doesn't look like a post at all.
+    """
     text = (text or "").strip()
     m = re.search(r"/comments/([a-z0-9]+)", text, re.I)
     if m:
         return m.group(1).lower()
     if text.lower().startswith("t3_"):
         text = text[3:]
-    return text.lower() or None
+    text = text.lower()
+    return text if POST_ID.fullmatch(text) else None
 
 
 def full_link(permalink):
