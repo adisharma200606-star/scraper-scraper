@@ -1,5 +1,7 @@
 # About this project
 
+@README_FOR_CLAUDE.md
+
 ## Why it exists
 
 A personal tool for Reddit research: find posts and comments on a topic, read what people
